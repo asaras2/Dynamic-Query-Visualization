@@ -65,8 +65,6 @@ print("\n\nGenerated SQL Query:", sql_query)
 
 
 
-# sql_query = """SELECT COUNT(GenreId) AS Number_of_Genres
-# FROM chinook.genre;"""
 # Execute the generated SQL query
 execute_query = QuerySQLDatabaseTool(db=db)
 query_result = execute_query.invoke(sql_query)
