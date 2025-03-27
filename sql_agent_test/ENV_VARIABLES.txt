@@ -1,0 +1,5 @@
+OPENAI_API_KEY="<INSERT YOUR OPENAI API KEY HERE>"
+SERVER="th1.database.windows.net"
+DATABASE="Th-1-pgsql"
+USERNAME="th1-admin"
+PASSWORD="ThreSh0lD@01"
