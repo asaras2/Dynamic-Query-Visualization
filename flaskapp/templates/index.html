@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SQL Query Assistant</title>
+    <link rel="stylesheet" href="static/styles.css">
+    <!-- <script src="https://cdn.plot.ly/plotly-latest.min.js"></script> -->
+</head>
+<body>
+    <div class="container">
+        <h1 class="header">SQL Query Assistant</h1>
+        
+        <div class="input-group">
+            <input type="text" id="user-input" placeholder="E.g., Show top 5 customers by sales">
+            <button id="submit-btn">Submit</button>
+        </div>
+        
+        <div id="output" class="output-container">
+            <!-- Results will load here -->
+        </div>
+        
+        <div id="visualization-container" class="visualization-wrapper">
+            <h3>Visualization</h3>
+            <div id="graph"></div>
+        </div>
+        
+        <div id="sql-container" class="sql-wrapper">
+            <h3>Generated SQL</h3>
+            <pre id="sql-query"></pre>
+        </div>
+        
+        <div id="data-container" class="data-wrapper">
+            <h3>Raw Data</h3>
+            <div id="data-table"></div>
+        </div>
+    </div>
+
+    <script src="static/script.js"></script>
+</body>
+</html>
