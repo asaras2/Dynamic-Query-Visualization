@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Results</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .result-card { background: #f9f9f9; padding: 20px; margin: 20px 0; border-radius: 5px; }
+        .sql-query { background: #f0f0f0; padding: 10px; font-family: monospace; }
+        .viz-img { max-width: 100%; height: auto; }
+        .back-btn { padding: 10px 20px; background: #333; color: white; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <h1>Results for: "{{ results.question }}"</h1>
+    
+    <div class="result-card">
+        <h2>Answer</h2>
+        <p>{{ results.answer }}</p>
+    </div>
+    
+    {% if results.visualization %}
+    <div class="result-card">
+        <h2>Visualization</h2>
+        <img src="{{ url_for('static', filename='images/' + results.visualization) }}" class="viz-img">
+    </div>
+    {% endif %}
+    
+    <div class="result-card">
+        <h2>SQL Query</h2>
+        <div class="sql-query">{{ results.sql_query }}</div>
+    </div>
+    
+    {% if results.data %}
+    <div class="result-card">
+        <h2>Sample Data</h2>
+        <table border="1">
+            <thead>
+                <tr>
+                    {% for key in results.data[0].keys() %}
+                    <th>{{ key }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in results.data %}
+                <tr>
+                    {% for value in row.values() %}
+                    <td>{{ value }}</td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+    
+    <a href="{{ url_for('index') }}" class="back-btn">Ask Another Question</a>
+</body>
+</html>
