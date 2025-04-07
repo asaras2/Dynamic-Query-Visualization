@@ -51,7 +51,7 @@ db = setup_database_connection()
 
 # Initialize OpenAI Client
 client = OpenAI(
-    api_key= "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"  # Make sure to set this environment variable
+    # api_key= "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"  # Make sure to set this environment variable
 )  # This will use the OPENAI_API_KEY environment variable
 
 # YOUR EXACT generate_visualization FUNCTION HERE
