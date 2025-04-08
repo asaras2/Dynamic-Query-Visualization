@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Database Query App</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .query-box { width: 100%; padding: 10px; font-size: 16px; }
+        .submit-btn { padding: 10px 20px; background: #4CAF50; color: white; border: none; cursor: pointer; }
+        .submit-btn:hover { background: #45a049; }
+    </style>
+</head>
+<body>
+    <h1>Database Query Interface</h1>
+    <form method="POST">
+        <input type="text" name="question" class="query-box" 
+               placeholder="Ask a question about the database (e.g., 'How many customers are from each country?')" required>
+        <br><br>
+        <button type="submit" class="submit-btn">Submit</button>
+    </form>
+</body>
+</html>
