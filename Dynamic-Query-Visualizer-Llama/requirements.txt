@@ -1,0 +1,9 @@
+Flask
+pandas
+requests
+sqlalchemy
+pyodbc
+plotly
+langchain
+langchain-community
+python-dotenv
