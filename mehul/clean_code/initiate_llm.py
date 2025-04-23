@@ -8,7 +8,7 @@ from langchain_core.messages import BaseMessage
 llama_llm =  AzureMLChatOnlineEndpoint(
     endpoint_url="https://Meta-Llama-3-1-70B-Instruct-zhlk.westus.models.ai.azure.com/chat/completions",
     endpoint_api_type=AzureMLEndpointApiType.serverless,
-    endpoint_api_key="oOGxXLf70uZz1XgcOL1PKzgNBzP4GshV",
+    endpoint_api_key="",
     content_formatter=CustomOpenAIChatContentFormatter(),
     model_kwargs={"temperature": 0.3, "max_tokens": 2000}
 )
