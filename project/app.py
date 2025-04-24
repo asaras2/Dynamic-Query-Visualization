@@ -1,96 +1,157 @@
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, render_template, request
 import os
 import urllib.parse
-import re
 import pandas as pd
-import sqlalchemy
-import plotly.graph_objects as go
-import plotly.express as px
-from openai import OpenAI
+import re
+import uuid
+from sqlalchemy import create_engine
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_community.tools import QuerySQLDatabaseTool
-from langchain_core.prompts import PromptTemplate
-import uuid
+from langchain.memory import ConversationBufferMemory
+from langchain.chains import ConversationChain
+from langchain_core.language_models.llms import LLM
+from typing import Optional, TypedDict, Any
+from pydantic import Field
+from groq import Groq
+import plotly.graph_objects as go
+import plotly.express as px
+from langgraph.graph import StateGraph, END
 
 app = Flask(__name__)
-
-# Configuration
 app.config['UPLOAD_FOLDER'] = 'static/images'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-def setup_database_connection():
-    """Establish database connection with proper error handling"""
-    driver = '{ODBC Driver 18 for SQL Server}'
-    SERVER_NAME = "th1.database.windows.net"
-    DATABASE_NAME = "Th-1-pgsql"
-    USERNAME = "th1-admin"
-    PASSWORD = "ThreSh0lD@01"  # In production, use environment variables
-    
-    if not PASSWORD:
-        raise ValueError("Database password not found in environment variables")
-    
-    try:
-        odbc_str = (
-            f"DRIVER={driver};"
-            f"SERVER={SERVER_NAME},1433;"
-            f"DATABASE={DATABASE_NAME};"
-            f"UID={USERNAME};"
-            f"PWD={PASSWORD};"
-            "Encrypt=yes;"
-            "TrustServerCertificate=no;"
+class AppState(TypedDict, total=False):
+    question: str
+    sql_query: str
+    sql_result: Any
+    df: pd.DataFrame
+    viz_path: str
+    answer: str
+
+class GroqLLM(LLM):
+    api_key: str
+    model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+    def _call(self, prompt: str, stop: Optional[list] = None) -> str:
+        client = Groq(api_key=self.api_key)
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_completion_tokens=1024,
+            top_p=1,
+            stream=False,
         )
-        connect_str = "mssql+pyodbc:///?odbc_connect=" + urllib.parse.quote_plus(odbc_str)
-        engine = sqlalchemy.create_engine(connect_str)
-        db = SQLDatabase(engine, schema="SalesLT")
-        return db
-    except Exception as e:
-        raise ConnectionError(f"Failed to establish database connection: {str(e)}")
+        return response.choices[0].message.content
 
-# Initialize database connection
-db = setup_database_connection()
+    @property
+    def _llm_type(self):
+        return "groq_custom"
 
-# Initialize OpenAI Client
-client = OpenAI(
-    api_key= "api_key"  # Make sure to set this environment variable
-)  # This will use the OPENAI_API_KEY environment variable
+llm = GroqLLM(api_key="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")
+memory = ConversationBufferMemory(return_messages=True)
+conversation = ConversationChain(llm=llm, memory=memory, verbose=False)
 
-# YOUR EXACT generate_visualization FUNCTION HERE
-def generate_visualization(df, query, question):
-    """
-    Generate an appropriate visualization for the query results using OpenAI GPT-4.
+db_user = "root"
+db_password = "qwertysql@G19"
+db_host = "localhost"
+db_name = "chinook"
+encoded_password = urllib.parse.quote(db_password, safe="")
+connection_uri = f"mysql+pymysql://{db_user}:{encoded_password}@{db_host}/{db_name}"
+db = SQLDatabase.from_uri(connection_uri)
+
+# def sql_node(state):
+#     question = state["question"]
+#     sql_prompt = f"""Generate a SQL query to answer: {question}. 
+#     The database has these tables:\n\n{db.get_table_info()}
+#     Return only the SQL query, nothing else."""
+#     sql_query = conversation.predict(input=sql_prompt).strip()
+#     sql_query = re.sub(r'```sql|```', '', sql_query).strip()
+#     result = QuerySQLDatabaseTool(db=db).invoke(sql_query)
+#     df = pd.read_sql(sql_query, db._engine)
+
+#     print("\n--- SQL QUERY ---\n", sql_query)
+#     print("\n--- SQL RESULT PREVIEW ---\n", df.head(5))
+
+#     return {**state, "sql_query": sql_query, "sql_result": result, "df": df}
+
+def sql_node(state):
+    question = state["question"]
+    sql_prompt = f"""Generate a SQL query to answer: {question}. 
+    The database has these tables:\n\n{db.get_table_info()}
+    Return only the SQL query, nothing else."""
     
-    Args:
-        df (pd.DataFrame): The query results
-        query (str): The SQL query
-        question (str): The original user question
-        
-    Returns:
-        str: Path to the saved image file
-    """
-    # Create a text description of the dataframe
+    sql_query = conversation.predict(input=sql_prompt).strip()
+    sql_query = re.sub(r'```sql|```', '', sql_query).strip()
+
+    try:
+        result = QuerySQLDatabaseTool(db=db).invoke(sql_query)
+        df = pd.read_sql(sql_query, db._engine)
+
+        print("\n--- SQL QUERY ---\n", sql_query)
+        print("\n--- SQL RESULT PREVIEW ---\n", df.head(5))
+
+        return {**state, "sql_query": sql_query, "sql_result": result, "df": df, "retry_count": 0}
+    except Exception as e:
+        print("[ERROR] SQL execution failed:", str(e))
+        return {**state, "sql_query": sql_query, "sql_error": str(e), "retry_count": 0}
+
+def sql_checker_node(state):
+    retry_count = state.get("retry_count", 0)
+    if retry_count >= 3:
+        print("[ERROR] Retry limit reached.")
+        return state
+
+    question = state["question"]
+    faulty_query = state.get("sql_query", "")
+    error_msg = state.get("sql_error", "")
+    table_info = db.get_table_info()
+
+    checker_prompt = f"""
+You are a SQL expert helping fix queries for a question-answering system.
+
+Given:
+- User Question: {question}
+- SQL Query: {faulty_query}
+- Table Information: {table_info}
+- Error Message: {error_msg}
+
+Your task:
+1. Identify and fix the SQL query error based on the error message.
+2. Return ONLY the corrected SQL query.
+
+Correct SQL Query:"""
+
+    corrected_query = conversation.predict(input=checker_prompt).strip()
+    corrected_query = re.sub(r'```sql|```', '', corrected_query).strip()
+
+    return {**state, "sql_query": corrected_query, "sql_error": None, "retry_count": retry_count + 1}
+
+
+def generate_visualization(df, question, query):
+    print("\n[DEBUG] Generating visualization for:", question)
+    print("[DEBUG] SQL Query:", query)
+    print("[DEBUG] DataFrame Head:\n", df.head())
+
     df_description = f"""
     User Question: {question}
-    
     SQL Query: {query}
-    
     Resulting Data:
     - Number of rows: {len(df)}
     - Number of columns: {len(df.columns)}
     - Columns: {', '.join(df.columns)}
-    - First 3 rows:
-    {df.head(3).to_string()}
-    
+    {df.to_string()}
     Data Types:
     {df.dtypes.to_string()}
     """
-    
-    # Prompt for visualization recommendation
+
     prompt = f"""You are a data visualization expert. Analyze the following SQL query results and recommend the most appropriate visualization.
 
     {df_description}
 
     Respond with:
-    1. The recommended visualization type (bar, line, pie, scatter, histogram, etc.)
+    1. The recommended visualization type (bar, line, pie, scatter, histogram, stacked bar graph etc.)
     2. The columns to use for x-axis, y-axis, etc.
     3. A suggested title
     4. A brief explanation of why this visualization fits
@@ -102,31 +163,13 @@ def generate_visualization(df, query, question):
     Color: <column or none>
     Title: <suggested title>
     Explanation: <brief explanation>"""
-    
-    # Get visualization recommendation
-    response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
-        max_tokens=1024
-    )
-    
-    recommendation = response.choices[0].message.content.strip()
-    print("\nVisualization Recommendation:\n", recommendation)
-    
-    # Parse the recommendation
-    rec_dict = {}
-    for line in recommendation.split('\n'):
-        if ':' in line:
-            key, value = line.split(':', 1)
-            rec_dict[key.strip()] = value.strip()
-    
-    # Generate Plotly code prompt - ask for clean code without markdown
+
+    recommendation = conversation.predict(input=prompt).strip()
+    print("[DEBUG] Visualization Recommendation:\n", recommendation)
+
     plotly_prompt = f"""Create Plotly visualization code in Python based on these specifications:
-
     Data Sample:
-    {df.head(3).to_string()}
-
+    {df.to_string()}
     Visualization Specifications:
     {recommendation}
 
@@ -135,169 +178,131 @@ def generate_visualization(df, query, question):
     2. Includes proper axis labels and title
     3. Handles any necessary data transformations
     4. Returns the fig object
+    - Use a pandas DataFrame called 'df'
+    - Use plotly.graph_objects (go) or plotly.express (px)
+    - No markdown or code blocks
+    - No explanations or comments"""
 
-    The code should:
-    - Work with a pandas DataFrame called 'df' in scope
-    - Use either plotly.graph_objects (go) or plotly.express (px)
-    - Be properly indented
-    - NOT include any markdown formatting or code blocks
-    - NOT include any explanations or comments
-    """
-    
-    # Get Plotly code
-    plotly_response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": plotly_prompt}],
-        temperature=0.3,
-        max_tokens=1024
-    )
-    
-    plotly_code = plotly_response.choices[0].message.content.strip()
-    print("\nGenerated Plotly Code:\n", plotly_code)
-    
-    # Clean the code by removing any markdown blocks
-    if '```python' in plotly_code:
-        plotly_code = plotly_code.split('```python')[1].split('```')[0]
-    elif '```' in plotly_code:
-        plotly_code = plotly_code.split('```')[1].split('```')[0]
-    
-    # Prepare the execution environment
-    local_vars = {
-        'df': df,
-        'go': go,
-        'px': px,
-        'pd': pd
-    }
-    
+    plotly_code = conversation.predict(input=plotly_prompt).strip()
+    print("[DEBUG] Generated Plotly Code:\n", plotly_code)
+
+    if '```' in plotly_code:
+        plotly_code = re.split(r'```(?:python)?', plotly_code)[-1].split('```')[0]
+
+    local_vars = {'df': df, 'go': go, 'px': px, 'pd': pd}
     try:
-        # Execute the code in a controlled environment
         exec(plotly_code, globals(), local_vars)
-        fig = local_vars.get('fig')
-        
-        if fig is None:
-            # Try to find the figure object by checking for Plotly figures
-            for var in local_vars.values():
-                if isinstance(var, go.Figure):
-                    fig = var
-                    break
-            
+        fig = None
+        for var in local_vars.values():
+            if isinstance(var, go.Figure):
+                fig = var
+                break
+
         if fig is None:
             raise ValueError("Generated code did not produce a Plotly figure object")
-        
-        # Save the figure with unique filename
+
         filename = f"viz_{uuid.uuid4().hex}.png"
         output_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         fig.write_image(output_path)
-        print(f"\nVisualization saved to {output_path}")
+        print("[DEBUG] Visualization saved to:", output_path)
         return filename
-        
-    except Exception as e:
-        print(f"Error generating visualization: {str(e)}")
-        print("Attempting to create a basic visualization as fallback...")
-        
-        try:
-            # Fallback visualization
-            if len(df.columns) == 1:
-                # Single column - show histogram or bar chart
-                col = df.columns[0]
-                if pd.api.types.is_numeric_dtype(df[col]):
-                    fig = px.histogram(df, x=col, title=f"Distribution of {col}")
-                else:
-                    fig = px.bar(df[col].value_counts(), title=f"Count of {col}")
-            elif len(df.columns) == 2:
-                # Two columns - assume x and y
-                x_col, y_col = df.columns[0], df.columns[1]
-                if pd.api.types.is_numeric_dtype(df[y_col]):
-                    fig = px.bar(df, x=x_col, y=y_col, title=f"{y_col} by {x_col}")
-                else:
-                    fig = px.bar(df[y_col].value_counts(), title=f"Count of {y_col}")
-            else:
-                # Multiple columns - show first two numeric columns
-                numeric_cols = df.select_dtypes(include='number').columns
-                if len(numeric_cols) >= 2:
-                    fig = px.scatter(df, x=numeric_cols[0], y=numeric_cols[1], 
-                                   title=f"{numeric_cols[1]} vs {numeric_cols[0]}")
-                else:
-                    # Last resort - show first two columns
-                    fig = px.scatter(df, x=df.columns[0], y=df.columns[1], 
-                                   title=f"{df.columns[1]} vs {df.columns[0]}")
-            
-            filename = f"viz_{uuid.uuid4().hex}.png"
-            output_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            fig.write_image(output_path)
-            print(f"Fallback visualization saved to {output_path}")
-            return filename
-            
-        except Exception as fallback_error:
-            print(f"Failed to create fallback visualization: {str(fallback_error)}")
-            return None
 
-def process_user_question(user_question):
-    """Process a user question and return results"""
-    try:
-        # Generate SQL Query
-        prompt = f"""Generate a SQL query to answer: {user_question}. 
-        The database has these tables:\n\n{db.get_table_info()}
-        Return only the SQL query, nothing else."""
-        
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=500
-        )
-        
-        sql_query = response.choices[0].message.content.strip()
-        sql_query = re.sub(r'```sql|```', '', sql_query).strip()
-        
-        # Execute query
-        execute_query = QuerySQLDatabaseTool(db=db)
-        query_result = execute_query.invoke(sql_query)
-        
-        # Convert to DataFrame
-        df = pd.read_sql(sql_query, db._engine)
-        
-        # Generate visualization using your exact function
-        viz_filename = generate_visualization(df, sql_query, user_question) if not df.empty else None
-        
-        # Generate natural language answer
-        answer_prompt = f"""Answer this question in simple language: {user_question}
-        using this data: {query_result}"""
-        
-        answer_response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": answer_prompt}],
-            temperature=0.2,
-            max_tokens=500
-        )
-        
-        answer = answer_response.choices[0].message.content.strip()
-        
-        return {
-            "question": user_question,
-            "answer": answer,
-            "sql_query": sql_query,
-            "visualization": viz_filename,
-            "data": df.to_dict('records')[:10]  # First 10 rows for display
-        }
-        
     except Exception as e:
-        print(f"Error processing question: {e}")
-        return {
-            "question": user_question,
-            "answer": f"Sorry, I couldn't process your question. Error: {str(e)}",
-            "sql_query": "",
-            "visualization": None,
-            "data": []
-        }
+        print(f"[ERROR] Visualization generation failed: {str(e)}")
+        return None
+
+def viz_node(state):
+    df = state["df"]
+    if df.empty:
+        return {**state, "viz_path": None}
+    fname = generate_visualization(df, state['question'], state['sql_query'])
+    return {**state, "viz_path": fname}
+
+def final_summary_node(state):
+    prompt = f"""
+You are a smart analyst. Use the following context to summarize the answer to the user's question clearly and concisely.
+
+User Question:
+{state['question']}
+
+SQL Query Output:
+{state.get('sql_result', 'Not available')}
+
+{"A visualization was also generated to support the results." if state.get('viz_path') else "No visualization was created."}
+
+Write a final answer in plain English that:
+- Answers the user's question directly
+- Highlights key trends, numbers, or patterns
+- Mentions the chart if it's relevant
+
+Final Summary:"""
+    
+    answer = conversation.predict(input=prompt).strip()
+    return {**state, "answer": answer}
+
+
+def supervisor_node(state):
+    return state
+
+def supervisor_router(state):
+    if "sql_query" not in state:
+        return "sql_agent"
+    elif "viz_path" not in state or not state["viz_path"]:
+        return "viz_agent"
+    else:
+        return "final_summary"
+
+
+graph = StateGraph(AppState)
+
+graph.add_node("supervisor", supervisor_node)
+graph.add_node("sql_agent", sql_node)
+graph.add_node("viz_agent", viz_node)
+graph.add_node("final_summary", final_summary_node)
+
+graph.set_entry_point("supervisor")
+graph.add_conditional_edges("supervisor", supervisor_router, {
+    "sql_agent": "sql_agent",
+    "viz_agent": "viz_agent",
+    "final_summary": "final_summary"
+})
+graph.add_edge("sql_agent", "supervisor")
+
+graph.add_node("sql_checker", sql_checker_node)
+
+# Route from sql_agent → either to supervisor or sql_checker (if error)
+def sql_router(state):
+    if "sql_error" in state and state["sql_error"]:
+        return "sql_checker"
+    return "supervisor"
+
+graph.add_conditional_edges("sql_agent", sql_router, {
+    "sql_checker": "sql_checker",
+    "supervisor": "supervisor"
+})
+
+# Link sql_checker back to sql_agent (for retry)
+graph.add_edge("sql_checker", "sql_agent")
+
+graph.add_edge("viz_agent", "supervisor")
+graph.add_edge("final_summary", END)
+
+app_graph = graph.compile()
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
         question = request.form['question']
-        results = process_user_question(question)
-        return render_template('results.html', results=results)
+        state = app_graph.invoke({"question": question}, config={"recursion_limit": 10})
+        return render_template('results.html', results={
+            "question": state["question"],
+            "answer": state.get("answer", ""),
+            "sql_query": state.get("sql_query", ""),
+            "visualization": state.get("viz_path"),
+            "data": state.get("df", pd.DataFrame()).to_dict("records")[:10]
+        })
     return render_template('index.html')
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=False, use_reloader=False)
+

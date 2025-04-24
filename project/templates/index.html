@@ -1,21 +1,34 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Database Query App</title>
-    <style>
-        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-        .query-box { width: 100%; padding: 10px; font-size: 16px; }
-        .submit-btn { padding: 10px 20px; background: #4CAF50; color: white; border: none; cursor: pointer; }
-        .submit-btn:hover { background: #45a049; }
-    </style>
+  <meta charset="UTF-8">
+  <title>ChatSQL: Natural Language to SQL</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+  <style>
+    body { padding: 2rem; }
+    .chat-box { height: 60vh; overflow-y: auto; border: 1px solid #ddd; padding: 1rem; background: #f9f9f9; }
+    .chat-bubble.user { background: #e6f7ff; text-align: right; }
+    .chat-bubble.bot { background: #e2ffe8; text-align: left; }
+    .chat-bubble { border-radius: 8px; padding: 0.5rem 1rem; margin: 0.5rem 0; display: inline-block; max-width: 80%; }
+  </style>
 </head>
 <body>
-    <h1>Database Query Interface</h1>
-    <form method="POST">
-        <input type="text" name="question" class="query-box" 
-               placeholder="Ask a question about the database (e.g., 'How many customers are from each country?')" required>
-        <br><br>
-        <button type="submit" class="submit-btn">Submit</button>
+  <div class="container">
+    <h2>Conversational SQL Assistant 💬</h2>
+    <div class="chat-box" id="chat-box">
+      {% if history %}
+        {% for entry in history %}
+          <div class="chat-bubble user"><strong>You:</strong> {{ entry['user'] }}</div>
+          <div class="chat-bubble bot"><strong>Bot:</strong> {{ entry['bot'] }}</div>
+        {% endfor %}
+      {% endif %}
+    </div>
+    <form method="POST" action="/">
+      <div class="input-group mt-3">
+        <input type="text" name="question" class="form-control" placeholder="Ask your question..." required autofocus>
+        <button class="btn btn-primary" type="submit">Send</button>
+      </div>
     </form>
+  </div>
 </body>
 </html>
