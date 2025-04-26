@@ -1,10 +1,12 @@
 from flask import Flask, render_template, request
+from dotenv import load_dotenv
+from langchain_community.chat_models.azureml_endpoint import AzureMLChatOnlineEndpoint, AzureMLEndpointApiType, CustomOpenAIChatContentFormatter
 import os
 import urllib.parse
 import pandas as pd
 import re
 import uuid
-from sqlalchemy import create_engine
+import sqlalchemy
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_community.tools import QuerySQLDatabaseTool
 from langchain.memory import ConversationBufferMemory
@@ -29,37 +31,34 @@ class AppState(TypedDict, total=False):
     viz_path: str
     answer: str
 
-class GroqLLM(LLM):
-    api_key: str
-    model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
-
-    def _call(self, prompt: str, stop: Optional[list] = None) -> str:
-        client = Groq(api_key=self.api_key)
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_completion_tokens=1024,
-            top_p=1,
-            stream=False,
-        )
-        return response.choices[0].message.content
-
-    @property
-    def _llm_type(self):
-        return "groq_custom"
-
-llm = GroqLLM(api_key="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")
+llm =  AzureMLChatOnlineEndpoint(
+    endpoint_url="https://Meta-Llama-3-1-70B-Instruct-harz.westus.models.ai.azure.com/chat/completions",
+    endpoint_api_type=AzureMLEndpointApiType.serverless,
+    endpoint_api_key="FvK3Y5jqH5Z8IacNhgJw1UQh2QFkcVoJ",
+    content_formatter=CustomOpenAIChatContentFormatter(),
+    model_kwargs={"temperature": 0.3, "max_tokens": 2000}
+)
 memory = ConversationBufferMemory(return_messages=True)
-conversation = ConversationChain(llm=llm, memory=memory, verbose=False)
+conversation = ConversationChain(llm=llm, memory=memory, verbose=True)
 
-db_user = "root"
-db_password = "qwertysql@G19"
-db_host = "localhost"
-db_name = "chinook"
-encoded_password = urllib.parse.quote(db_password, safe="")
-connection_uri = f"mysql+pymysql://{db_user}:{encoded_password}@{db_host}/{db_name}"
-db = SQLDatabase.from_uri(connection_uri)
+def setup_database_connection():
+    user = "postgres"
+    db_password = "Qwerty@532"
+    host = "localhost"
+    port = "5432"
+    db = "532"
+
+    encoded_password = urllib.parse.quote(db_password, safe="")
+    url = f"postgresql://{user}:{encoded_password}@{host}:{port}/{db}"
+    engine = sqlalchemy.create_engine(url)
+    try:
+        db = SQLDatabase(engine, schema="analytical_schema")
+        return db
+    except Exception as e:
+        raise ConnectionError(f"Failed to establish database connection: {str(e)}")
+
+# Initialize database connection
+db = setup_database_connection()
 
 # def sql_node(state):
 #     question = state["question"]
@@ -76,7 +75,31 @@ db = SQLDatabase.from_uri(connection_uri)
 
 #     return {**state, "sql_query": sql_query, "sql_result": result, "df": df}
 
+# def sql_node(state):
+#     question = state["question"]
+#     sql_prompt = f"""Generate a SQL query to answer: {question}. 
+#     The database has these tables:\n\n{db.get_table_info()}
+#     Return only the SQL query, nothing else."""
+    
+#     sql_query = conversation.predict(input=sql_prompt).strip()
+#     sql_query = re.sub(r'```sql|```', '', sql_query).strip()
+
+#     try:
+#         result = QuerySQLDatabaseTool(db=db).invoke(sql_query)
+#         df = pd.read_sql(sql_query, db._engine)
+
+#         print("\n--- SQL QUERY ---\n", sql_query)
+#         print("\n--- SQL RESULT PREVIEW ---\n", df.head(5))
+
+#         return {**state, "sql_query": sql_query, "sql_result": result, "df": df, "retry_count": 0}
+#     except Exception as e:
+#         print("[ERROR] SQL execution failed:", str(e))
+#         return {**state, "sql_query": sql_query, "sql_error": str(e), "retry_count": 0}
+
 def sql_node(state):
+    print("\n=== [NODE] sql_agent ===")
+    print("[INPUT STATE]:", state)
+
     question = state["question"]
     sql_prompt = f"""Generate a SQL query to answer: {question}. 
     The database has these tables:\n\n{db.get_table_info()}
@@ -89,15 +112,49 @@ def sql_node(state):
         result = QuerySQLDatabaseTool(db=db).invoke(sql_query)
         df = pd.read_sql(sql_query, db._engine)
 
-        print("\n--- SQL QUERY ---\n", sql_query)
-        print("\n--- SQL RESULT PREVIEW ---\n", df.head(5))
-
-        return {**state, "sql_query": sql_query, "sql_result": result, "df": df, "retry_count": 0}
+        updated_state = {**state, "sql_query": sql_query, "sql_result": result, "df": df, "retry_count": 0}
+        print("[OUTPUT STATE]:", updated_state)
+        return updated_state
     except Exception as e:
-        print("[ERROR] SQL execution failed:", str(e))
-        return {**state, "sql_query": sql_query, "sql_error": str(e), "retry_count": 0}
+        updated_state = {**state, "sql_query": sql_query, "sql_error": str(e), "retry_count": 0}
+        print("[OUTPUT STATE]:", updated_state)
+        return updated_state
+
+# def sql_checker_node(state):
+#     retry_count = state.get("retry_count", 0)
+#     if retry_count >= 3:
+#         print("[ERROR] Retry limit reached.")
+#         return state
+
+#     question = state["question"]
+#     faulty_query = state.get("sql_query", "")
+#     error_msg = state.get("sql_error", "")
+#     table_info = db.get_table_info()
+
+#     checker_prompt = f"""
+# You are a SQL expert helping fix queries for a question-answering system.
+
+# Given:
+# - User Question: {question}
+# - SQL Query: {faulty_query}
+# - Table Information: {table_info}
+# - Error Message: {error_msg}
+
+# Your task:
+# 1. Identify and fix the SQL query error based on the error message.
+# 2. Return ONLY the corrected SQL query.
+
+# Correct SQL Query:"""
+
+#     corrected_query = conversation.predict(input=checker_prompt).strip()
+#     corrected_query = re.sub(r'```sql|```', '', corrected_query).strip()
+
+#     return {**state, "sql_query": corrected_query, "sql_error": None, "retry_count": retry_count + 1}
 
 def sql_checker_node(state):
+    print("\n=== [NODE] sql_checker ===")
+    print("[INPUT STATE]:", state)
+
     retry_count = state.get("retry_count", 0)
     if retry_count >= 3:
         print("[ERROR] Retry limit reached.")
@@ -126,7 +183,9 @@ Correct SQL Query:"""
     corrected_query = conversation.predict(input=checker_prompt).strip()
     corrected_query = re.sub(r'```sql|```', '', corrected_query).strip()
 
-    return {**state, "sql_query": corrected_query, "sql_error": None, "retry_count": retry_count + 1}
+    updated_state = {**state, "sql_query": corrected_query, "sql_error": None, "retry_count": retry_count + 1}
+    print("[OUTPUT STATE]:", updated_state)
+    return updated_state
 
 
 def generate_visualization(df, question, query):
@@ -176,10 +235,10 @@ def generate_visualization(df, question, query):
     Generate complete Python code using Plotly that:
     1. Creates the visualization
     2. Includes proper axis labels and title
-    3. Handles any necessary data transformations
-    4. Returns the fig object
+    3. Handles any necessary data transformations 
     - Use a pandas DataFrame called 'df'
     - Use plotly.graph_objects (go) or plotly.express (px)
+    - Dont include fig.show() function in the code
     - No markdown or code blocks
     - No explanations or comments"""
 
@@ -211,14 +270,59 @@ def generate_visualization(df, question, query):
         print(f"[ERROR] Visualization generation failed: {str(e)}")
         return None
 
+# def viz_node(state):
+#     df = state["df"]
+#     if df.empty:
+#         return {**state, "viz_path": None}
+#     fname = generate_visualization(df, state['question'], state['sql_query'])
+#     return {**state, "viz_path": fname}
+
 def viz_node(state):
+    print("\n=== [NODE] viz_agent ===")
+    print("[INPUT STATE]:", state)
+
     df = state["df"]
     if df.empty:
-        return {**state, "viz_path": None}
+        updated_state = {**state, "viz_path": None}
+        print("[OUTPUT STATE]:", updated_state)
+        return updated_state
+
     fname = generate_visualization(df, state['question'], state['sql_query'])
-    return {**state, "viz_path": fname}
+    updated_state = {**state, "viz_path": fname}
+    print("[OUTPUT STATE]:", updated_state)
+    return updated_state
+
+
+# def final_summary_node(state):
+#     prompt = f"""
+# You are a smart analyst. Use the following context to summarize the answer to the user's question clearly and concisely.
+
+# User Question:
+# {state['question']}
+
+# SQL Query Output:
+# {state.get('sql_result', 'Not available')}
+
+# {"A visualization was also generated to support the results." if state.get('viz_path') else "No visualization was created."}
+
+# Write a final answer in plain English that:
+# - Answers the user's question directly
+# - Highlights key trends, numbers, or patterns
+# - Mentions the chart if it's relevant
+
+# Final Summary:"""
+    
+#     answer = conversation.predict(input=prompt).strip()
+#     return {**state, "answer": answer}
+
+
+# def supervisor_node(state):
+#     return state
 
 def final_summary_node(state):
+    print("\n=== [NODE] final_summary ===")
+    print("[INPUT STATE]:", state)
+
     prompt = f"""
 You are a smart analyst. Use the following context to summarize the answer to the user's question clearly and concisely.
 
@@ -238,10 +342,14 @@ Write a final answer in plain English that:
 Final Summary:"""
     
     answer = conversation.predict(input=prompt).strip()
-    return {**state, "answer": answer}
-
+    updated_state = {**state, "answer": answer}
+    print("[OUTPUT STATE]:", updated_state)
+    return updated_state
 
 def supervisor_node(state):
+    print("\n=== [NODE] supervisor ===")
+    print("[INPUT STATE]:", state)
+    print("[OUTPUT STATE]:", state)
     return state
 
 def supervisor_router(state):
@@ -289,11 +397,38 @@ graph.add_edge("final_summary", END)
 
 app_graph = graph.compile()
 
+# @app.route('/', methods=['GET', 'POST'])
+# def index():
+#     if request.method == 'POST':
+#         question = request.form['question']
+#         state = app_graph.invoke({"question": question}, config={"recursion_limit": 10})
+#         return render_template('results.html', results={
+#             "question": state["question"],
+#             "answer": state.get("answer", ""),
+#             "sql_query": state.get("sql_query", ""),
+#             "visualization": state.get("viz_path"),
+#             "data": state.get("df", pd.DataFrame()).to_dict("records")[:10]
+#         })
+#     return render_template('index.html')
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
         question = request.form['question']
         state = app_graph.invoke({"question": question}, config={"recursion_limit": 10})
+
+        # Print conversational history
+        print("\n=== [Conversation History] ===")
+        for i, msg in enumerate(memory.chat_memory.messages):
+            role = "User" if msg.type == "human" else "AI"
+            print(f"[{role}] {msg.content}")
+        print("===============================\n")
+
+        # Print final complete state
+        print("\n=== [FINAL STATE] ===")
+        print(state)
+        print("=====================\n")
+
         return render_template('results.html', results={
             "question": state["question"],
             "answer": state.get("answer", ""),
