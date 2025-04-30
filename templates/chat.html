@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Modern Chatbot + Dashboard Aesthetic</title>
+
+  <!-- Google Font -->
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/chat_style.css') }}">
+</head>
+
+<div id="lightbox" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background: rgba(0,0,0,0.8); z-index:200; justify-content:center; align-items:center;">
+  <img id="lightbox-img" src="" style="max-width:90%; max-height:90%; border-radius:10px;">
+</div>
+
+<body>
+
+<div id="navbar">
+  <div>
+    <a href="/">🗨️ Chat</a>
+    <a href="/dashboard">📊 Dashboard</a>
+    <a href="/reports">📂 Get Reports</a> 
+  </div>
+  <div>
+    <button id="toggle-theme">🌗 Dark Mode</button>
+    <button id="clear-dashboard">🧹 Clear Dashboard</button>
+  </div>
+</div>
+
+<div id="main-container">
+  <div id="dashboard-background"></div>
+
+  <div id="chat-panel">
+    <div id="chat-container">
+      <div class="message bot">
+        👋 Hi! Ask me a question to start chatting!
+      </div>
+    </div>
+
+    <form id="input-container" method="post" action="/" enctype="multipart/form-data">
+      <input type="text" id="question-input" name="question" placeholder="Type your question..." required>
+      <button type="submit" id="send-button">Send</button>
+    </form>
+  </div>
+</div>
+
+<script>
+const chatContainer = document.getElementById('chat-container');
+const dashboardBackground = document.getElementById('dashboard-background');
+const inputForm = document.getElementById('input-container');
+const questionInput = document.getElementById('question-input');
+const toggleThemeBtn = document.getElementById('toggle-theme');
+const clearDashboardBtn = document.getElementById('clear-dashboard');
+
+inputForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const question = questionInput.value.trim();
+  if (!question) return;
+
+  addMessage(question, 'user');
+
+  const typingMessage = addMessage('Bot is typing...', 'bot');
+  await new Promise(resolve => setTimeout(resolve, 1500));
+
+  const formData = new FormData();
+  formData.append('question', question);
+
+  const response = await fetch('/', {
+    method: 'POST',
+    body: formData
+  });
+
+  const data = await response.json();
+  typingMessage.remove();
+
+  addMessage(`<b>Answer:</b><br>${data.answer}`, 'bot');
+
+  const highlightedSQL = highlightSQL(data.sql_query || '');
+  if (highlightedSQL) {
+    addMessage(`<b>SQL Query:</b><pre>${highlightedSQL}</pre>`, 'bot');
+  }
+
+  if (data.visualization) {
+    addMessage(`<b>Visualization:</b><br><img src="/static/images/${data.visualization}" onclick="addToDashboardBackground('/static/images/${data.visualization}')">`, 'bot');
+  }
+
+  if (data.data && data.data.length > 0) {
+    const tableHTML = generateTableHTML(data.data);
+    addMessage(`<b>Data Table:</b><br>${tableHTML}`, 'bot');
+  }
+
+  questionInput.value = '';
+});
+
+function addMessage(text, sender) {
+  const messageDiv = document.createElement('div');
+  messageDiv.className = `message ${sender}`;
+  messageDiv.innerHTML = text;
+  chatContainer.appendChild(messageDiv);
+  messageDiv.scrollIntoView({ behavior: "smooth", block: "start" });
+  return messageDiv;
+}
+
+function addToDashboardBackground(imageSrc) {
+  const img = document.createElement('img');
+  img.src = imageSrc;
+  img.style.cursor = "pointer";
+  img.onclick = () => openLightbox(imageSrc);
+  dashboardBackground.appendChild(img);
+
+  // Save to localStorage too!
+  let savedImages = JSON.parse(localStorage.getItem('dashboard_images')) || [];
+  if (!savedImages.includes(imageSrc)) {
+    savedImages.push(imageSrc);
+    localStorage.setItem('dashboard_images', JSON.stringify(savedImages));
+  }
+}
+
+const lightbox = document.getElementById('lightbox');
+const lightboxImg = document.getElementById('lightbox-img');
+
+function openLightbox(src) {
+  lightboxImg.src = src;
+  lightbox.style.display = "flex";
+}
+
+lightbox.addEventListener('click', () => {
+  lightbox.style.display = "none";
+});
+
+function highlightSQL(sql) {
+  const keywords = [
+    "SELECT", "FROM", "WHERE", "GROUP BY", "ORDER BY", "HAVING", "AS", "AND", "OR", "NOT", "IN", "IS", "NULL", "JOIN", "LEFT", 
+    "RIGHT", "INNER", "OUTER", "ON", "DISTINCT", "COUNT", "SUM", "AVG", "MAX", "MIN", "LIMIT", "OFFSET", "BY", "CASE", "WHEN", "THEN", "END"
+  ];
+  const regex = new RegExp(`\\b(${keywords.join('|')})\\b`, 'gi');
+  return sql.replace(regex, match => `<span class="keyword">${match.toUpperCase()}</span>`);
+}
+
+function generateTableHTML(data) {
+  const keys = Object.keys(data[0]);
+  let html = '<table class="chat-table"><thead><tr>';
+  keys.forEach(key => {
+    html += `<th>${key}</th>`;
+  });
+  html += '</tr></thead><tbody>';
+  data.forEach(row => {
+    html += '<tr>';
+    keys.forEach(key => {
+      html += `<td>${row[key]}</td>`;
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  return html;
+}
+
+toggleThemeBtn.addEventListener('click', () => {
+  const currentTheme = document.documentElement.getAttribute('data-theme');
+  if (currentTheme === 'dark') {
+    document.documentElement.removeAttribute('data-theme');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+});
+
+clearDashboardBtn.addEventListener('click', () => {
+  dashboardBackground.innerHTML = '';
+});
+</script>
+
+</body>
+</html>

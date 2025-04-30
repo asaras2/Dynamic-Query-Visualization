@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>All Reports</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    body {
+      font-family: 'Poppins', sans-serif;
+      background-color: #f0f2f5;
+      margin: 0;
+      padding: 30px;
+      color: #333;
+    }
+    h1 {
+      text-align: center;
+      color: #4f46e5;
+    }
+    .report-list {
+      max-width: 800px;
+      margin: 30px auto;
+      background: white;
+      padding: 25px;
+      border-radius: 12px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+    }
+    .report-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid #eee;
+    }
+    .report-item:last-child {
+      border-bottom: none;
+    }
+    a.download-link {
+      text-decoration: none;
+      color: #4f46e5;
+      font-weight: 600;
+      transition: 0.2s;
+    }
+    a.download-link:hover {
+      color: #3730a3;
+    }
+  </style>
+</head>
+<body>
+  <h1>📄 Available Reports</h1>
+  <div class="report-list" id="report-list">
+    <p>Loading reports...</p>
+  </div>
+
+  <script>
+    async function loadReports() {
+      const response = await fetch('/reports', { method: 'POST' });
+      const data = await response.json();
+
+      const listContainer = document.getElementById('report-list');
+      listContainer.innerHTML = '';
+
+      if (data.report_files.length === 0) {
+        listContainer.innerHTML = '<p>No reports found.</p>';
+        return;
+      }
+
+      data.report_files.forEach(file => {
+        const item = document.createElement('div');
+        item.className = 'report-item';
+        item.innerHTML = `
+          <span>${file}</span>
+          <a class="download-link" href="/reports/${file}" download>Download</a>
+        `;
+        listContainer.appendChild(item);
+      });
+    }
+
+    loadReports();
+  </script>
+</body>
+</html>
