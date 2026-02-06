@@ -9,8 +9,6 @@ import uuid
 import sqlalchemy
 from langchain_community.utilities.sql_database import SQLDatabase
 from langchain_community.tools import QuerySQLDatabaseTool
-from langchain.memory import ConversationBufferMemory
-from langchain.chains import ConversationChain
 from langchain_core.language_models.llms import LLM
 from typing import Optional, TypedDict, Any
 from pydantic import Field

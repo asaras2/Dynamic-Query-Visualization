@@ -64,16 +64,16 @@ Then list:
 
 code_agent_chain = code_system_prompt | gpt_llm.with_structured_output(code)
 
-from agent.sql_react_agent_llama import df
+# from sql_react_agent import df
 import io
 buf = io.StringIO()
 
 # df.dtypes
 
-question = "Give the number of employees for each ethnicity"
-results = list(df.itertuples(index=False, name=None))
-df.info(buf=buf, memory_usage=False, verbose=True)
-df_desc = buf.getvalue()
+# question = "Give the number of employees for each ethnicity"
+# results = list(df.itertuples(index=False, name=None))
+# df.info(buf=buf, memory_usage=False, verbose=True)
+# df_desc = buf.getvalue()
 
 # temp_messages = [
 #             (
@@ -325,12 +325,12 @@ workflow = workflow_builder.compile()
 #     pass
 
 
-initial_state = {"question": question, "df": df, "results": results, "messages":[], "error": ""}
+# initial_state = {"question": question, "df": df, "results": results, "messages":[], "error": ""}
 
-solution = workflow.invoke(initial_state)
+# solution = workflow.invoke(initial_state)
 
-print(solution['generation'].imports)
-print(solution['generation'].code)
+# print(solution['generation'].imports)
+# print(solution['generation'].code)
 
 
 VIZ_AGENT = workflow

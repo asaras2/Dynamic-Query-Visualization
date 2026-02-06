@@ -2,9 +2,6 @@ from dotenv import load_dotenv
 load_dotenv()
 from langchain_openai import ChatOpenAI
 
-from langgraph_supervisor import create_supervisor
-from langgraph.prebuilt import create_react_agent
-from langchain.agents import AgentExecutor
 from typing_extensions import Annotated, TypedDict
 from typing import Callable, Literal, Optional, Sequence, Type, TypeVar, Union, cast, List, Tuple, Any
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
@@ -22,9 +19,9 @@ from fpdf import FPDF
 import os
 import datetime
 
-from agent.sql_react_agent_llama import SQL_SUBAGENT, make_dataframe
+from agent.sql_react_agent import SQL_SUBAGENT, make_dataframe
 from agent.viz_agent_memory import VIZ_AGENT
-from agent.initiate_llm import gpt_llm, llama_llm
+from agent.initiate_llm import gpt_llm
 
 import pandas as pd
 
@@ -291,20 +288,21 @@ builder.add_node("report_agent", report_gen_node)
 graph = builder.compile()
 
 
-initial_state = {
-    "messages": [HumanMessage(content="Give me the number of employees present from each ethnicity")],
-    "question": "",
-    "sql_query": "",
-    "results": "",
-    "df": "",
-    "python_visualization_code": ""
-}
+# initial_state = {
+#     "messages": [HumanMessage(content="Give me the number of employees present from each ethnicity")],
+#     "question": "",
+#     "sql_query": "",
+#     "results": "",
+#     "df": "",
+#     "python_visualization_code": ""
+# }
 
-thread_id = {"configurable": {"thread_id": "1"}}
+# thread_id = {"configurable": {"thread_id": "1"}}
 
-result = graph.invoke(initial_state, thread_id)
+# result = graph.invoke(initial_state, thread_id)
 
-print("DEBUG RESULT: ", result)
+# for m in result["messages"]:
+#     m.pretty_print()
 
 SQL_ORCHESTRATOR = graph
 
