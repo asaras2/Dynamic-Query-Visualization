@@ -2,6 +2,9 @@
 
 A multi-agent AI system that converts natural language questions into SQL queries, executes them against a PostgreSQL database, and generates interactive visualizations with AI-powered insights.
 
+<iframe width="560" height="315" src="/Users/mehulmathur/AI Projects/Dynamic Query Visualizer/Demo_video.mp4" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
 ## Overview
 
 Dynamic Query Visualizer uses an agentic architecture with LangGraph to orchestrate multiple specialized agents:
