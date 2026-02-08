@@ -27,6 +27,7 @@
   <div>
     <button id="toggle-theme">🌗 Dark Mode</button>
     <button id="clear-dashboard">🧹 Clear Dashboard</button>
+    <button id="reset-session" title="Clear connection and start over">🔄 Reset</button>
   </div>
 </div>
 
@@ -96,6 +97,7 @@ const inputForm = document.getElementById('input-container');
 const questionInput = document.getElementById('question-input');
 const toggleThemeBtn = document.getElementById('toggle-theme');
 const clearDashboardBtn = document.getElementById('clear-dashboard');
+const resetSessionBtn = document.getElementById('reset-session');
 
 inputForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -250,6 +252,18 @@ toggleThemeBtn.addEventListener('click', () => {
 
 clearDashboardBtn.addEventListener('click', () => {
   dashboardBackground.innerHTML = '';
+});
+
+if (resetSessionBtn) resetSessionBtn.addEventListener('click', async () => {
+  try {
+    await fetch('/reset', {
+      method: 'POST',
+      credentials: 'same-origin'
+    });
+  } finally {
+    // Reload to re-render the setup section based on is_initialized.
+    window.location.reload();
+  }
 });
 
 // Handle upload form submission

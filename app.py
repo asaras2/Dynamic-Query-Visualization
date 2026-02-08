@@ -337,6 +337,19 @@ def download_report(filename):
     return send_from_directory('./reports', filename, as_attachment=True)
 
 
+@app.route('/reset', methods=['POST'])
+def reset_session():
+    """Clear the current session's in-memory state so the user can re-initialize."""
+    try:
+        session_id = session.get('session_id')
+        if session_id:
+            user_data_store.pop(session_id, None)
+        session.pop('session_id', None)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': f'Failed to reset session: {str(e)}'}), 500
+
+
 
 if __name__ == '__main__':
     app.run(port=3000, debug=False, use_reloader=False)

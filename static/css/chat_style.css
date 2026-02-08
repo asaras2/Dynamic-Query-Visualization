@@ -62,7 +62,7 @@
     opacity: 0.8;
   }
   
-  #toggle-theme, #clear-dashboard {
+  #toggle-theme, #clear-dashboard, #reset-session {
     background: transparent;
     border: 1px solid white;
     color: white;
@@ -74,7 +74,7 @@
     transition: 0.2s;
   }
   
-  #toggle-theme:hover, #clear-dashboard:hover {
+  #toggle-theme:hover, #clear-dashboard:hover, #reset-session:hover {
     background: white;
     color: var(--primary-color);
   }
