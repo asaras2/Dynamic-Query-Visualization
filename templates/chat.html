@@ -31,9 +31,38 @@
   <div id="dashboard-background"></div>
 
   <div id="chat-panel">
+    {% if not is_initialized %}
+      <div id="upload-section" style="margin-bottom: 20px; padding: 20px; background: #f8f9fa; border-radius: 8px; border: 2px dashed #dee2e6;">
+        <h3 style="margin-top: 0; color: #495057;">📁 Setup Your Database</h3>
+        <p style="color: #6c757d; margin-bottom: 15px;">Upload your PostgreSQL SQL file and provide your OpenAI API key to get started.</p>
+        
+        <form id="upload-form" enctype="multipart/form-data" style="display: flex; flex-direction: column; gap: 15px;">
+          <div>
+            <label for="sql_file" style="display: block; margin-bottom: 5px; font-weight: 600;">SQL File (.sql)</label>
+            <input type="file" id="sql_file" name="sql_file" accept=".sql" required style="width: 100%; padding: 8px; border: 1px solid #ced4da; border-radius: 4px;">
+          </div>
+          
+          <div>
+            <label for="openai_api_key" style="display: block; margin-bottom: 5px; font-weight: 600;">OpenAI API Key</label>
+            <input type="password" id="openai_api_key" name="openai_api_key" placeholder="sk-..." required style="width: 100%; padding: 8px; border: 1px solid #ced4da; border-radius: 4px;">
+          </div>
+          
+          <button type="submit" style="background: #007bff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">
+            🚀 Upload & Initialize
+          </button>
+        </form>
+        
+        <div id="upload-status" style="margin-top: 10px; padding: 10px; border-radius: 4px; display: none;"></div>
+      </div>
+    {% endif %}
+
     <div id="chat-container">
       <div class="message bot">
-        👋 Hi! Ask me a question to start chatting!
+        {% if is_initialized %}
+          🎉 Welcome back! Ask me questions about your data.
+        {% else %}
+          👋 Hi! Upload your SQL file and API key above, then ask me questions about your data!
+        {% endif %}
       </div>
     </div>
 
@@ -167,6 +196,73 @@ toggleThemeBtn.addEventListener('click', () => {
 clearDashboardBtn.addEventListener('click', () => {
   dashboardBackground.innerHTML = '';
 });
+
+// Handle upload form submission
+const uploadForm = document.getElementById('upload-form');
+const uploadStatus = document.getElementById('upload-status');
+
+if (uploadForm) uploadForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  
+  const formData = new FormData();
+  const sqlFile = document.getElementById('sql_file').files[0];
+  const apiKey = document.getElementById('openai_api_key').value;
+  
+  if (!sqlFile || !apiKey) {
+    showUploadStatus('Please fill in all fields', 'error');
+    return;
+  }
+  
+  formData.append('sql_file', sqlFile);
+  formData.append('openai_api_key', apiKey);
+  
+  try {
+    showUploadStatus('Uploading and initializing...', 'loading');
+    
+    const response = await fetch('/upload', {
+      method: 'POST',
+      body: formData
+    });
+    
+    const result = await response.json();
+    
+    if (response.ok) {
+      showUploadStatus('✅ ' + result.message, 'success');
+      // Hide upload form after successful upload
+      document.getElementById('upload-section').style.display = 'none';
+      
+      // Update chat message
+      const botMessage = document.querySelector('.message.bot');
+      botMessage.innerHTML = '🎉 Great! Your database is ready. Ask me questions about your data!';
+    } else {
+      showUploadStatus('❌ ' + result.error, 'error');
+    }
+  } catch (error) {
+    showUploadStatus('❌ Upload failed: ' + error.message, 'error');
+  }
+});
+
+function showUploadStatus(message, type) {
+  uploadStatus.style.display = 'block';
+  uploadStatus.textContent = message;
+  
+  // Reset classes
+  uploadStatus.className = '';
+  
+  if (type === 'success') {
+    uploadStatus.style.background = '#d4edda';
+    uploadStatus.style.color = '#155724';
+    uploadStatus.style.border = '1px solid #c3e6cb';
+  } else if (type === 'error') {
+    uploadStatus.style.background = '#f8d7da';
+    uploadStatus.style.color = '#721c24';
+    uploadStatus.style.border = '1px solid #f5c6cb';
+  } else if (type === 'loading') {
+    uploadStatus.style.background = '#fff3cd';
+    uploadStatus.style.color = '#856404';
+    uploadStatus.style.border = '1px solid #ffeaa7';
+  }
+}
 </script>
 
 </body>

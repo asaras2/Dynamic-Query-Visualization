@@ -19,9 +19,9 @@ from fpdf import FPDF
 import os
 import datetime
 
-from agent.sql_react_agent import SQL_SUBAGENT, make_dataframe
-from agent.viz_agent_memory import VIZ_AGENT
-from agent.initiate_llm import gpt_llm
+from agent.sql_react_agent import make_dataframe, create_sql_agent_graph
+from agent.viz_agent_memory import create_viz_agent
+from agent.initiate_llm import create_gpt_llm
 
 import pandas as pd
 
@@ -35,133 +35,16 @@ class AgentState(TypedDict):
     python_visualization_code: Annotated[str, Field(description="The Python code to visualize the results")]
     report_states: List[dict] = Field(..., description="The states of the report generation process")
 
+# Define router type for structured output
+class Router(TypedDict):
+    """Worker to route to next. If no workers needed, route to FINISH - AND give the final answer."""
 
-def nl2sql_node(state: AgentState) -> Command[Literal["supervisor"]]:
-    # last = state['messages'][-1]
-    question = state["question"]
-    try:
-        question = json.loads(question)
-        question = question["question"]
-    except json.JSONDecodeError:
-        pass        
-    # print(last.content)
-    result = SQL_SUBAGENT.invoke({"messages": [HumanMessage(content=question)]})
-    return Command(
-        update={
-            "messages": [
-                HumanMessage(content="sql_agent Result Message: GENERATED SQL AND RESULTS => " + result["messages"][-1].content, name="sql_agent")
-            ],
-            # "question": question,
-            "sql_query": json.loads(result["messages"][-1].content)['query'],
-            "results": json.loads(result["messages"][-1].content)['result'],
-        },
-        goto="supervisor",
-    )
-
-def make_table_node(state: AgentState) -> Command[Literal["supervisor"]]:
-    query = state["sql_query"]
-    results = state["results"]
-    df = make_dataframe(query, results)
-    return Command(
-        update={
-            "messages": [
-                HumanMessage(content=f"make_table Result Message: Here is the table I created from the results: {str(df)}", name="make_table")
-            ],
-            "df": df,
-        },
-        goto="supervisor",
-    )
-
-def viz_node(state: AgentState) -> Command[Literal["supervisor"]]:
-    question = state["question"]
-    df = state["df"]
-    results = state["results"]
-    viz_agent_state = {
-        "question": question,
-        "df": df,
-        "results": results,
-        "messages": [],
-        "error": ""
-    }
-
-    response = VIZ_AGENT.invoke(viz_agent_state)
-    viz_code = response["generation"].imports + "\n" + response["generation"].code
-    return Command(
-        update={
-            
-            "messages": [
-                HumanMessage(content=f"viz_agent Result Message: Here is the visualization code for plotting the data:\n {viz_code}", name="viz_agent")
-            ],
-            "python_visualization_code": viz_code,
-        },
-        goto="supervisor",
-    )
-
-def report_gen_node(state: AgentState) -> Command[Literal["supervisor"]]:
-    states_list = state["report_states"]
-    pdf = FPDF()
-    cnt = 1
-    
-    for report_state in states_list:
-        pdf.add_page()
-        pdf.set_font("Arial", size=12)
-
-        print("REPORT STATE: ", report_state)
-
-        # Get user's question
-        question = report_state.get("question", "")
-
-        # Get visualization code
-        viz_path = report_state.get("img_path", "")
-
-        summary = report_state.get("summary", "")
-
-        # Add title
-        pdf.cell(200, 10, txt=f"Analysis #{cnt}", ln=True, align='C')
-        pdf.ln(10)
-
-        # Add user's question
-        pdf.set_font("Arial", "B", 12)
-        pdf.cell(0, 10, txt="Question:", ln=True)
-        pdf.set_font("Arial", size=12)
-        pdf.multi_cell(0, 10, txt=question)
-        pdf.ln(5)
-
-        # Generate and include visualization
-        if viz_path:
-            # Execute visualization code
-            
-            pdf.set_font("Arial", "B", 12)
-            pdf.cell(0, 10, txt="Visualization:", ln=True)
-            pdf.image(viz_path, x=10, w=180)
-            pdf.ln(5)
-            # Clean up
-            # os.remove(viz_path)
-        
-        if summary:
-            # Add summary
-            pdf.set_font("Arial", "B", 12)
-            pdf.cell(0, 10, txt="Summary:", ln=True)
-            pdf.set_font("Arial", size=12)
-            pdf.multi_cell(0, 10, txt=summary)
-            pdf.ln(5)
-        
-        cnt += 1
-    
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"reports/report_{timestamp}.pdf"
-    pdf.output(filename)
-
-    return Command(
-        update={
-            
-            "messages": [
-                HumanMessage(content=f"report_agent Result Message: Report has been generated and saved as {filename}", name="report_agent")
-            ],
-            "report_states": []
-        },
-        goto="supervisor",
-    )
+    """The worker to route to next."""
+    next: Literal["sql_agent", "make_table_node", "viz_agent", "FINISH"]
+    """The query for the next worker. (if not FINISH)"""
+    query: str
+    """The final answer to the user's question if routing to FINISH."""
+    final_answer: str
 
 
 # Define available agents
@@ -221,71 +104,203 @@ Your job is to orchestrate a multi-step pipeline to answer the user's latest que
 """
 )
 
-# Define router type for structured output
-class Router(TypedDict):
-    """Worker to route to next. If no workers needed, route to FINISH - AND give the final answer."""
+# function to create orchestrator with custom API key
+def create_orchestrator(openai_api_key: Optional[str] = None, db_url: Optional[str] = None, schema: Optional[str] = None):
+    if not db_url:
+        db_url = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")
+        if not db_url:
+            raise ValueError(
+                "No Postgres connection URL provided. Pass db_url=... or set DATABASE_URL/POSTGRES_URL."
+            )
+    user_gpt_llm = create_gpt_llm(openai_api_key)
+    user_gpt_llm = user_gpt_llm.with_structured_output(Router)
 
-    """The worker to route to next."""
-    next: Literal["sql_agent", "make_table_node", "viz_agent", "FINISH"]
-    """The query for the next worker. (if not FINISH)"""
-    query: str
-    """The final answer to the user's question if routing to FINISH."""
-    final_answer: str
+    sql_sub_agent = create_sql_agent_graph(openai_api_key, db_url=db_url, schema=schema)
+    viz_sub_agent = create_viz_agent(openai_api_key)
 
-# Create supervisor node function
-def supervisor_node(state: AgentState) -> Command[Literal["sql_agent", "make_table_node", "viz_agent", "report_agent", "__end__"]]:
-    # messages = [
-    #     {"role": "system", "content": supervisor_memory_prompt},
-    # ] + state["messages"]
-    print("\n\n========BACK TO SUPERVISOR========\n")
-
-    state_info = {k: v for k, v in state.items() if k != 'messages'}
-
-    messages = [
-        {"role": "system", "content": supervisor_memory_prompt}
-        # {"role": "user", "content": f"AgentState: {json.dumps(state_info, default=str)}"}
-    ] + state["messages"]
-    
-    # print("INVOKING WITH STATE INFO AND MESSAGES\n", state_info, "\n==\n", state["messages"])
-    response = gpt_llm.with_structured_output(Router).invoke(messages)
-    goto = response["next"]
-    print(f"Next Worker: {goto}")
-
-    if goto == "sql_agent":
-        return Command(update={
-            "question": response["query"],
-            "sql_query": "",
-            "results": "",
-            "df": "",
-            "python_visualization_code": ""
-        } ,goto=goto)
-    elif goto == "viz_agent":
-        return Command(update={
-            "question": response["query"],
-            "python_visualization_code": ""
-        }, goto=goto)
-
-        
-    elif goto == "FINISH":
-        goto = END
+    def nl2sql_node(state: AgentState) -> Command[Literal["supervisor"]]:
+        # last = state['messages'][-1]
+        question = state["question"]
+        try:
+            question = json.loads(question)
+            question = question["question"]
+        except json.JSONDecodeError:
+            pass        
+        # print(last.content)
+        result = sql_sub_agent.invoke({"messages": [HumanMessage(content=question)]})
         return Command(
             update={
                 "messages": [
-                    HumanMessage(content="FINAL ANSWER: " +response["final_answer"], name="supervisor")
+                    HumanMessage(content="sql_agent Result Message: GENERATED SQL AND RESULTS => " + result["messages"][-1].content, name="sql_agent")
                 ],
-            }
-            ,goto=goto)
-    
-    return Command(goto=goto)
+                # "question": question,
+                "sql_query": json.loads(result["messages"][-1].content)['query'],
+                "results": json.loads(result["messages"][-1].content)['result'],
+            },
+            goto="supervisor",
+        )
 
-builder = StateGraph(AgentState)
-builder.add_edge(START, "supervisor")
-builder.add_node("supervisor", supervisor_node)
-builder.add_node("sql_agent", nl2sql_node)
-builder.add_node("make_table_node", make_table_node)
-builder.add_node("viz_agent", viz_node)
-builder.add_node("report_agent", report_gen_node)
-graph = builder.compile()
+    def make_table_node(state: AgentState) -> Command[Literal["supervisor"]]:
+        query = state["sql_query"]
+        results = state["results"]
+        df = make_dataframe(query, results, db_url=db_url, schema=schema)
+        return Command(
+            update={
+                "messages": [
+                    HumanMessage(content=f"make_table Result Message: Here is the table I created from the results: {str(df)}", name="make_table")
+                ],
+                "df": df,
+            },
+            goto="supervisor",
+        )
+
+    def viz_node(state: AgentState) -> Command[Literal["supervisor"]]:
+        question = state["question"]
+        df = state["df"]
+        results = state["results"]
+        viz_agent_state = {
+            "question": question,
+            "df": df,
+            "results": results,
+            "messages": [],
+            "error": ""
+        }
+        response = viz_sub_agent.invoke(viz_agent_state)
+        viz_code = response["generation"].imports + "\n" + response["generation"].code
+        return Command(
+            update={
+                
+                "messages": [
+                    HumanMessage(content=f"viz_agent Result Message: Here is the visualization code for plotting the data:\n {viz_code}", name="viz_agent")
+                ],
+                "python_visualization_code": viz_code,
+            },
+            goto="supervisor",
+        )
+
+    def report_gen_node(state: AgentState) -> Command[Literal["supervisor"]]:
+        states_list = state["report_states"]
+        pdf = FPDF()
+        cnt = 1
+        
+        for report_state in states_list:
+            pdf.add_page()
+            pdf.set_font("Arial", size=12)
+
+            print("REPORT STATE: ", report_state)
+
+            # Get user's question
+            question = report_state.get("question", "")
+
+            # Get visualization code
+            viz_path = report_state.get("img_path", "")
+
+            summary = report_state.get("summary", "")
+
+            # Add title
+            pdf.cell(200, 10, txt=f"Analysis #{cnt}", ln=True, align='C')
+            pdf.ln(10)
+
+            # Add user's question
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(0, 10, txt="Question:", ln=True)
+            pdf.set_font("Arial", size=12)
+            pdf.multi_cell(0, 10, txt=question)
+            pdf.ln(5)
+
+            # Generate and include visualization
+            if viz_path:
+                # Execute visualization code
+                
+                pdf.set_font("Arial", "B", 12)
+                pdf.cell(0, 10, txt="Visualization:", ln=True)
+                pdf.image(viz_path, x=10, w=180)
+                pdf.ln(5)
+                # Clean up
+                # os.remove(viz_path)
+            
+            if summary:
+                # Add summary
+                pdf.set_font("Arial", "B", 12)
+                pdf.cell(0, 10, txt="Summary:", ln=True)
+                pdf.set_font("Arial", size=12)
+                pdf.multi_cell(0, 10, txt=summary)
+                pdf.ln(5)
+            
+            cnt += 1
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"reports/report_{timestamp}.pdf"
+        pdf.output(filename)
+
+        return Command(
+            update={
+                
+                "messages": [
+                    HumanMessage(content=f"report_agent Result Message: Report has been generated and saved as {filename}", name="report_agent")
+                ],
+                "report_states": []
+            },
+            goto="supervisor",
+        )
+    
+    # Create supervisor node function
+    def supervisor_node(state: AgentState) -> Command[Literal["sql_agent", "make_table_node", "viz_agent", "report_agent", "__end__"]]:
+        # messages = [
+        #     {"role": "system", "content": supervisor_memory_prompt},
+        # ] + state["messages"]
+        print("\n\n========BACK TO SUPERVISOR========\n")
+
+        state_info = {k: v for k, v in state.items() if k != 'messages'}
+
+        messages = [
+            {"role": "system", "content": supervisor_memory_prompt}
+            # {"role": "user", "content": f"AgentState: {json.dumps(state_info, default=str)}"}
+        ] + state["messages"]
+        
+        # print("INVOKING WITH STATE INFO AND MESSAGES\n", state_info, "\n==\n", state["messages"])
+        response = user_gpt_llm.invoke(messages)
+        goto = response["next"]
+        print(f"Next Worker: {goto}")
+
+        if goto == "sql_agent":
+            return Command(update={
+                "question": response["query"],
+                "sql_query": "",
+                "results": "",
+                "df": "",
+                "python_visualization_code": ""
+            } ,goto=goto)
+        elif goto == "viz_agent":
+            return Command(update={
+                "question": response["query"],
+                "python_visualization_code": ""
+            }, goto=goto)
+
+            
+        elif goto == "FINISH":
+            goto = END
+            return Command(
+                update={
+                    "messages": [
+                        HumanMessage(content="FINAL ANSWER: " +response["final_answer"], name="supervisor")
+                    ],
+                }
+                ,goto=goto)
+        
+        return Command(goto=goto)
+
+    builder = StateGraph(AgentState)
+    builder.add_edge(START, "supervisor")
+    builder.add_node("supervisor", supervisor_node)
+    builder.add_node("sql_agent", nl2sql_node)
+    builder.add_node("make_table_node", make_table_node)
+    builder.add_node("viz_agent", viz_node)
+    builder.add_node("report_agent", report_gen_node)
+    graph = builder.compile()
+
+    return graph
+    
 
 
 # initial_state = {
@@ -303,8 +318,6 @@ graph = builder.compile()
 
 # for m in result["messages"]:
 #     m.pretty_print()
-
-SQL_ORCHESTRATOR = graph
 
 
 

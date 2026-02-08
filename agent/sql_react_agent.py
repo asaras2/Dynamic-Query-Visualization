@@ -1,4 +1,4 @@
-from dotenv import load_dotenv, find_dotenv
+from dotenv import load_dotenv
 load_dotenv(override=True)
 from langchain_community.utilities import SQLDatabase
 import sqlalchemy
@@ -22,7 +22,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.types import Command
 from typing_extensions import Literal
 
-from agent.initiate_llm import gpt_llm
+from agent.initiate_llm import create_gpt_llm  # Changed to dynamic function
 import pandas as pd
 
 
@@ -31,7 +31,7 @@ from IPython.display import Image, display
 
 
 import os
-import urllib
+from typing import Optional, Any, List, Union
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
@@ -51,29 +51,9 @@ class AgentState(TypedDict):
 # engine = sqlalchemy.create_engine(connect_str)
 # db = SQLDatabase(engine, schema="SalesLT")
 
-def setup_database_connection():
-    user = "mehulmathur"
-    psswd = "mehul160401"
-    host = "localhost"
-    port = "5432"
-    db = "mehul_532"
-
-    url = f"postgresql://{user}:{psswd}@{host}:{port}/{db}"
-    engine = sqlalchemy.create_engine(url)
-    try:
-        db = SQLDatabase(engine, schema="analytical_schema")
-        return db
-    except Exception as e:
-        raise ConnectionError(f"Failed to establish database connection: {str(e)}")
-
-# Initialize database connection
-
-# Initialize database connection
-db = setup_database_connection()
-
-# Pre-fill values (no prompt templates or partials)
-table_info = db.get_table_info()
-top_k = "Return the most informative results."
+def create_sql_database(db_url: str, schema: Optional[str] = None) -> SQLDatabase:
+    engine = sqlalchemy.create_engine(db_url)
+    return SQLDatabase(engine, schema=schema) if schema else SQLDatabase(engine)
 
 # Define a structured response schema as a Pydantic model
 class SQLOutput(BaseModel):
@@ -81,34 +61,20 @@ class SQLOutput(BaseModel):
     sql_query: str = Field(description="The raw SQL query that answers the user's question")
 
 
-# Create structured LLM that returns SQLOutput
-sql_llm_structured = gpt_llm.with_structured_output(SQLOutput)
+def create_sql_llm_structured(api_key: Optional[str] = None):
+    """Create structured LLM instance with user's API key."""
+    gpt_llm = create_gpt_llm(api_key)
+    return gpt_llm.with_structured_output(SQLOutput)
 
 
 
 class SQLToolSchema(BaseModel):
     question: str
 
-# Helper function for executing cleaned SQL queries
-def execute_sql_query(query: str) -> str:
-    """Execute SQL query against the database."""
-    execute_query = QuerySQLDatabaseTool(db=db)
-    try:
-        result = execute_query.run(query)
-        # print("Query Execution Result:", result)
-
-        if isinstance(result, str):
-            try:
-                import ast
-                return ast.literal_eval(result)
-            except Exception:
-                return result
-        return result
-
-    except Exception as e:
-        error_msg = f"Error executing query: {str(e)}"
-        # print(error_msg)
-        return error_msg
+def make_dataframe(query: str, result: Any, *, db_url: str, schema: Optional[str] = None) -> pd.DataFrame:
+    """Convert SQL query result to a Pandas DataFrame by re-running the query."""
+    engine = sqlalchemy.create_engine(db_url)
+    return pd.read_sql(query, engine)
 
 # Note: we no longer build a separate SQL chain with prompt templates.
 # Instead, nodes call the raw `sql_llm` and parse outputs with `PydanticOutputParser`.
@@ -141,100 +107,138 @@ Based on the error, you may need to join other tables or fix column names, or co
 {table_info}
 """.strip()
 
-
-def gen_sql_node(state: AgentState):
-    """Generate SQL query from the user's question."""
-    last_msg = state["messages"][-1]
-    question = last_msg.content
-
-    system_msg = SystemMessage(content=build_system_sql_prompt(table_info))
-    human_msg = HumanMessage(content=question)
-
-    # Invoke structured LLM that returns SQLOutput directly
-    response = sql_llm_structured.invoke([system_msg, human_msg])
+def create_sql_agent_graph(api_key: Optional[str] = None, db_url: Optional[str] = None, schema: Optional[str] = None):
+    """
+    Create a SQL agent graph with user's API key.
     
-    response_dict = {"question": question, "query": response.sql_query}
-
-    return {
-        "messages": [
-            ToolMessage(
-                content=json.dumps(response_dict),
-                name="nl2sql_tool",
-                tool_call_id="tool_123"
+    Args:
+        api_key: User's OpenAI API key. If None, uses default/environment key.
+    
+    Returns:
+        Compiled StateGraph for SQL generation and execution
+    """
+    if not db_url:
+        db_url = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")
+        if not db_url:
+            raise ValueError(
+                "No Postgres connection URL provided. Pass db_url=... or set DATABASE_URL/POSTGRES_URL."
             )
-        ]
-    }
 
-def exec_sql_node(state: AgentState):
-    last = state["messages"][-1]
-    data = json.loads(last.content)
-    # print("\n\n=======IN EXEC SQL NODE WITH ==>", data)
-    sql_query = data['query']
-    result = execute_sql_query(sql_query)
+    db = create_sql_database(db_url, schema=schema)
+    table_info = db.get_table_info()
 
-    updated_state = {
-        "question": data["question"],
-        "query": sql_query,
-        "result": result
-    }
+    def execute_sql_query(query: str) -> Union[str, Any]:
+        execute_query = QuerySQLDatabaseTool(db=db)
+        try:
+            result = execute_query.run(query)
+            if isinstance(result, str):
+                try:
+                    import ast
+                    return ast.literal_eval(result)
+                except Exception:
+                    return result
+            return result
+        except Exception as e:
+            return f"Error: {str(e)}"
 
+    # Create structured LLM with user's API key
+    user_sql_llm_structured = create_sql_llm_structured(api_key)
+    
+    def gen_sql_node(state: AgentState):
+        """Generate SQL query from the user's question."""
+        last_msg = state["messages"][-1]
+        question = last_msg.content
 
-    return {
-        "messages": [
-            ToolMessage(
-                content=json.dumps(updated_state),
-                name="exec_sql",
-                tool_call_id="tool_456"
-            )
-        ]
-    }
+        system_msg = SystemMessage(content=build_system_sql_prompt(table_info))
+        human_msg = HumanMessage(content=question)
 
-def check_node(state: AgentState) -> Command[Literal["exec_sql","__end__"]]:
-    last = state["messages"][-1]
-    data = json.loads(last.content)
-    result = data["result"]
+        # Invoke structured LLM that returns SQLOutput directly
+        response = user_sql_llm_structured.invoke([system_msg, human_msg])
+        
+        response_dict = {"question": question, "query": response.sql_query}
 
-    # if there's an error, call the structured LLM to produce a corrected SQL
-    if isinstance(result, str) and result.startswith("Error:"):
-        system_msg = SystemMessage(content=build_system_correction_prompt(table_info))
-        human_content = (
-            f"User Question:\n{data['question']}\n\nPrevious SQL:\n{data['query']}\n\n"
-            f"Error message:\n{result}"
-        )
-        human_msg = HumanMessage(content=human_content)
+        return {
+            "messages": [
+                ToolMessage(
+                    content=json.dumps(response_dict),
+                    name="nl2sql_tool",
+                    tool_call_id="tool_123"
+                )
+            ]
+        }
 
-        # Use structured LLM for correction
-        corrected_response = sql_llm_structured.invoke([system_msg, human_msg])
-        corrected_query = corrected_response.sql_query
+    def exec_sql_node(state: AgentState):
+        last = state["messages"][-1]
+        data = json.loads(last.content)
+        # print("\n\n=======IN EXEC SQL NODE WITH ==>", data)
+        sql_query = data['query']
+        result = execute_sql_query(sql_query)
 
         updated_state = {
             "question": data["question"],
-            "query": corrected_query,
+            "query": sql_query,
+            "result": result
         }
-        
-        # emit the corrected SQL message and go re-run exec_sql
-        return Command(
-            update={"messages":[
+
+
+        return {
+            "messages": [
                 ToolMessage(
                     content=json.dumps(updated_state),
-                    name="correct_sql",
-                    tool_call_id="tool_789"
+                    name="exec_sql",
+                    tool_call_id="tool_456"
                 )
-            ]},
-            goto="exec_sql"
-        )
+            ]
+        }
 
-    # otherwise we're done
-    return Command(goto=END)
+    def check_node(state: AgentState) -> Command[Literal["exec_sql","__end__"]]:
+        last = state["messages"][-1]
+        data = json.loads(last.content)
+        result = data["result"]
 
-builder = StateGraph(AgentState)
-builder.add_node("gen_sql", gen_sql_node)
-builder.add_edge("gen_sql","exec_sql")
-builder.add_node("exec_sql", exec_sql_node)
-builder.add_edge("exec_sql","check")
-builder.add_node("check", check_node)
-builder.set_entry_point("gen_sql")
-graph = builder.compile(name="sql_agent")
+        # if there's an error, call the structured LLM to produce a corrected SQL
+        if isinstance(result, str) and result.startswith("Error:"):
+            system_msg = SystemMessage(content=build_system_correction_prompt(table_info))
+            human_content = (
+                f"User Question:\n{data['question']}\n\nPrevious SQL:\n{data['query']}\n\n"
+                f"Error message:\n{result}"
+            )
+            human_msg = HumanMessage(content=human_content)
+
+            # Use structured LLM for correction
+            corrected_response = user_sql_llm_structured.invoke([system_msg, human_msg])
+            corrected_query = corrected_response.sql_query
+
+            updated_state = {
+                "question": data["question"],
+                "query": corrected_query,
+            }
+            
+            # emit the corrected SQL message and go re-run exec_sql
+            return Command(
+                update={"messages":[
+                    ToolMessage(
+                        content=json.dumps(updated_state),
+                        name="correct_sql",
+                        tool_call_id="tool_789"
+                    )
+                ]},
+                goto="exec_sql"
+            )
+
+        # otherwise we're done
+        return Command(goto=END)
+
+    # Build graph
+    builder = StateGraph(AgentState)
+    builder.add_node("gen_sql", gen_sql_node)
+    builder.add_edge("gen_sql","exec_sql")
+    builder.add_node("exec_sql", exec_sql_node)
+    builder.add_edge("exec_sql","check")
+    builder.add_node("check", check_node)
+    builder.set_entry_point("gen_sql")
+    
+    return builder.compile(name="sql_agent")
 
 # visulize the graph with mermaid
 # display(Image(graph.get_graph().draw_mermaid_png()))
@@ -244,22 +248,4 @@ graph = builder.compile(name="sql_agent")
 #     f.write(graph.get_graph().draw_mermaid_png())
 
 
-#### Tool for making dataframe
-
-def make_dataframe(query: str, result):
-    """Convert SQL query result to a Pandas DataFrame."""
-    
-    df_schema = pd.read_sql(query, db._engine)
-    # print(df_schema)
-    return df_schema
-
-# initial_state = { "messages": [HumanMessage(content="give the average salary of employees each year for the past 5 years")] }
-# final_state = graph.invoke(initial_state)
-# for m in final_state["messages"]:
-#     m.pretty_print()
-
-SQL_SUBAGENT = graph
-
-temp = [['Hispanic or Latino', 81], ['Native American', 57], ['Asian', 67], ['White', 74], [None, 144]]
-df = make_dataframe('SELECT "ethnic_description", COUNT("employee_id") FROM analytical_schema.dim_ukg_employee_demographic_details GROUP BY "ethnic_description" LIMIT 5', temp)
-# print(df)
+#### (legacy make_dataframe removed; use the keyword-only version above)

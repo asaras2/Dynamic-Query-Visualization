@@ -3,18 +3,44 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 from langgraph.types import Command
 from typing_extensions import Literal
+from langgraph.graph import END, StateGraph, START
 import pandas as pd
+
+from agent.initiate_llm import create_gpt_llm
+
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+import os
+
+from typing import List
+from typing_extensions import TypedDict
+
+import io
+
 
 class code(BaseModel):
     """Schema for code solutions from the coding assistant"""
     imports: str = Field(description="Code Block import statements")
     code: str = Field(description="Code block not including import statements")
 
-from agent.initiate_llm import gpt_llm
 
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
-import os
+class State(TypedDict):
+    """
+    Represents the state of the Graph.
+    Attributes:
+    error : Binary flag for control flow to check whether test error was tripped
+    messages: chat history with user questions and AI responses
+    generation: code solution
+
+        
+    """
+    question: str
+    df: pd.DataFrame
+    results: List[tuple]
+    error: str
+    messages: List
+    generation: str
+
 
 code_system_prompt = ChatPromptTemplate.from_messages(
     [
@@ -62,11 +88,7 @@ Then list:
     ]
 )
 
-code_agent_chain = code_system_prompt | gpt_llm.with_structured_output(code)
-
 # from sql_react_agent import df
-import io
-buf = io.StringIO()
 
 # df.dtypes
 
@@ -96,189 +118,206 @@ buf = io.StringIO()
 # print(res.imports)
 # print(res.code)
 
-from typing import List
-from typing_extensions import TypedDict
 
-class State(TypedDict):
+# function to return the workflow for visualization agent
+def create_viz_agent(api_key: str = None):
     """
-    Represents the state of the Graph.
-    Attributes:
-    error : Binary flag for control flow to check whether test error was tripped
-    messages: chat history with user questions and AI responses
-    generation: code solution
+    Factory function to create a new instance of the visualization agent workflow.
+    
+    Args:
+        api_key: OpenAI API key. If None, uses OPENAI_API_KEY from environment.
+    
+    Returns:
+        A compiled StateGraph workflow for the visualization agent.
+    """
+    gpt_llm = create_gpt_llm(api_key)
+    
+    # Re-define code_agent_chain with the new LLM instance
+    code_agent_chain = code_system_prompt | gpt_llm.with_structured_output(code)
 
+    # Define the nodes
+    def generate(state: State) -> Command[Literal["check_code"]]:
+
+        """
+        Node to generate code solution
+
+        Arguments:
+            state (dict): The current graph state
+
+        Returns:
+            state (dict): The updated graph state
+
+        """
+
+        print("----- Generating Code -----")
+
+        # Store State variables
+        messages = state["messages"]
+        error = state["error"]
+
+        question = state["question"]
+        df = state["df"]
+        results = state["results"]
+
+        buf = io.StringIO()
+        df.info(buf=buf, memory_usage=False, verbose=True)
+        df_desc = buf.getvalue()    
+
+        # if we have been routed back with error
+        if error == "yes":
+            # error fix prompt
+            messages += [
+                (
+                    "user",
+                    "Now, try again. Invoke the code tool to structure the output with the imports and code block."
+                )
+            ]
         
-    """
-    question: str
-    df: pd.DataFrame
-    results: List[tuple]
-    error: str
-    messages: List
-    generation: str
+        else:
+            messages+= [
+                (
+                    "user",
+                    f"""
+                        User Query - `question`: {question}.
+                        Here is the description of the dataframe - 'df_description': {df_desc}.
+                        Here is the data that is in the dataframe - 'results': {results}.
+                        
+                        Invoke the code tool to structure the output with the imports and code block."""
+                )
+            ]
+        
+        code_solution = code_agent_chain.invoke(
+            {"messages": messages}
+        )
 
-# Define the nodes
-def generate(state: State) -> Command[Literal["check_code"]]:
-
-    """
-    Node to generate code solution
-
-    Arguments:
-        state (dict): The current graph state
-
-    Returns:
-        state (dict): The updated graph state
-
-    """
-
-    print("----- Generating Code -----")
-
-    # Store State variables
-    messages = state["messages"]
-    error = state["error"]
-
-    question = state["question"]
-    df = state["df"]
-    results = state["results"]
-
-    buf = io.StringIO()
-    df.info(buf=buf, memory_usage=False, verbose=True)
-    df_desc = buf.getvalue()    
-
-    # if we have been routed back with error
-    if error == "yes":
-        # error fix prompt
         messages += [
-            (
-                "user",
-                "Now, try again. Invoke the code tool to structure the output with the imports and code block."
-            )
-        ]
+                (
+                    "assistant",
+                    f"Imports: {code_solution.imports} \n Code Block: {code_solution.code}",
+                )
+            ]
+
+
+        # if code_solution.prefix == "end":
+        #     next_step = "end"
+        # else:
+        #     messages += [
+        #         (
+        #             "assistant",
+        #             f"{code_solution.prefix} \n Imports: {code_solution.imports} \n Code Block: {code_solution.code}",
+        #         )
+        #     ]
+
+        return Command(goto="check_code", 
+        update =
+            {
+                "generation": code_solution,
+                "messages": messages,
+            }
+        )
+        
+        # return {"generation": code_solution, "messages": messages, "iterations": iterations, "error_iterations": error_iterations, "next_step": next_step, "error": error}
     
-    else:
-        messages+= [
-            (
-                "user",
-                f"""
-                    User Query - `question`: {question}.
-                    Here is the description of the dataframe - 'df_description': {df_desc}.
-                    Here is the data that is in the dataframe - 'results': {results}.
-                    
-                    Invoke the code tool to structure the output with the imports and code block."""
-            )
-        ]
+
+    def execute_and_check_code(state: State) -> Command[Literal["generate", "__end__"]]:
+        """
+        Execute code and check for errors.
+
+        Arguments:
+            state (dict): The current Graph state.
+
+        Returns:
+            state (dict): The updated graph state.
+        """
+
+        print("----- Executing code -----")
+
+        # storing state variables
+        messages = state["messages"]
+        code_solution = state["generation"]
+        imports = code_solution.imports
+        code_to_run = code_solution.code
+
+        # check imports
+        try:
+            exec(imports)
+        except Exception as e:
+            print("---- Code Exceution Failed: Imports ----")
+            error_message = [
+                (
+                    "user",
+                    f"Your code solution failed the import test: {e}"
+                )
+            ]
+            messages += error_message
+            return Command(goto="generate",
+            update = {
+                "messages": messages,
+                "error": "yes"
+            }) 
+        
+        # check execution
+        local_vars = {}
+        try:
+            exec(imports + "\n" + code_to_run, {}, local_vars)
+
+        except Exception as e:
+            print("---- Code Exceution Failed: Code Block ----")
+            error_message = [
+                (
+                    "user",
+                    f"Your code failed the code execution test: {e}"
+                )
+            ]
+            messages += error_message
+            return Command(goto="generate",
+            update = {
+                "messages": messages,
+                "error": "yes"
+            }) 
+        
+        # check if fig is in local vars
+        if "fig" not in local_vars:
+            print("---- Code Exceution Failed: No Figure Object ----")
+            error_message = [
+                (
+                    "user",
+                    f"Your code solution failed the test: no figure object was returned. Please make sure that you have a figure object in your code and that it is named 'fig'."
+                )
+            ]
+            messages += error_message
+            return Command(goto="generate",
+            update = {
+                "messages": messages,
+                "error": "yes"
+            })
+        
+        # No failures
+        print("---- No Code Failures----")
+        return Command(goto=END)
     
-    code_solution = code_agent_chain.invoke(
-        {"messages": messages}
-    )
+    workflow_builder = StateGraph(State)
 
-    messages += [
-            (
-                "assistant",
-                f"Imports: {code_solution.imports} \n Code Block: {code_solution.code}",
-            )
-        ]
+    workflow_builder.add_node("generate", generate) # generate solution
+    workflow_builder.add_node("check_code", execute_and_check_code) # execute and check code
 
-
-    # if code_solution.prefix == "end":
-    #     next_step = "end"
-    # else:
-    #     messages += [
-    #         (
-    #             "assistant",
-    #             f"{code_solution.prefix} \n Imports: {code_solution.imports} \n Code Block: {code_solution.code}",
-    #         )
-    #     ]
-
-    return Command(goto="check_code", 
-    update =
-        {
-            "generation": code_solution,
-            "messages": messages,
-        }
-    )
+    # Build Graph
+    workflow_builder.add_edge(START, "generate")
+    # workflow.add_edge("generate", "check_code")
+    # workflow_builder.add_conditional_edges(
+    #     "generate",
+    #     decide_to_finish,
+    #     {
+    #         "end": END,
+    #         "execute_code": "check_code"
+    #     }
+    # )
+    # workflow_builder.add_edge("check_code", "generate")
+    workflow = workflow_builder.compile()
     
-    # return {"generation": code_solution, "messages": messages, "iterations": iterations, "error_iterations": error_iterations, "next_step": next_step, "error": error}
+    return workflow
 
 
-
-from langgraph.graph import END, StateGraph, START
-
-def execute_and_check_code(state: State) -> Command[Literal["generate", "__end__"]]:
-    """
-    Execute code and check for errors.
-
-    Arguments:
-        state (dict): The current Graph state.
-
-    Returns:
-        state (dict): The updated graph state.
-    """
-
-    print("----- Executing code -----")
-
-    # storing state variables
-    messages = state["messages"]
-    code_solution = state["generation"]
-    imports = code_solution.imports
-    code_to_run = code_solution.code
-
-    # check imports
-    try:
-        exec(imports)
-    except Exception as e:
-        print("---- Code Exceution Failed: Imports ----")
-        error_message = [
-            (
-                "user",
-                f"Your code solution failed the import test: {e}"
-            )
-        ]
-        messages += error_message
-        return Command(goto="generate",
-        update = {
-            "messages": messages,
-            "error": "yes"
-        }) 
-    
-    # check execution
-    local_vars = {}
-    try:
-        exec(imports + "\n" + code_to_run, {}, local_vars)
-
-    except Exception as e:
-        print("---- Code Exceution Failed: Code Block ----")
-        error_message = [
-            (
-                "user",
-                f"Your code failed the code execution test: {e}"
-            )
-        ]
-        messages += error_message
-        return Command(goto="generate",
-        update = {
-            "messages": messages,
-            "error": "yes"
-        }) 
-    
-    # check if fig is in local vars
-    if "fig" not in local_vars:
-        print("---- Code Exceution Failed: No Figure Object ----")
-        error_message = [
-            (
-                "user",
-                f"Your code solution failed the test: no figure object was returned. Please make sure that you have a figure object in your code and that it is named 'fig'."
-            )
-        ]
-        messages += error_message
-        return Command(goto="generate",
-        update = {
-            "messages": messages,
-            "error": "yes"
-        })
-    
-    # No failures
-    print("---- No Code Failures----")
-    return Command(goto=END)
 
 # def decide_to_finish(state: State):
 
@@ -296,26 +335,6 @@ def execute_and_check_code(state: State) -> Command[Literal["generate", "__end__
 #     else:
 #         return "execute_code"
 
-workflow_builder = StateGraph(State)
-
-# define the nodes
-workflow_builder.add_node("generate", generate) # generate solution
-workflow_builder.add_node("check_code", execute_and_check_code) # execute and check code
-
-# Build Graph
-workflow_builder.add_edge(START, "generate")
-# workflow.add_edge("generate", "check_code")
-# workflow_builder.add_conditional_edges(
-#     "generate",
-#     decide_to_finish,
-#     {
-#         "end": END,
-#         "execute_code": "check_code"
-#     }
-# )
-# workflow_builder.add_edge("check_code", "generate")
-workflow = workflow_builder.compile()
-
 # from IPython.display import Image, display
 
 # try:
@@ -331,9 +350,6 @@ workflow = workflow_builder.compile()
 
 # print(solution['generation'].imports)
 # print(solution['generation'].code)
-
-
-VIZ_AGENT = workflow
 
 
 
