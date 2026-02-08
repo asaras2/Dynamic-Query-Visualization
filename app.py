@@ -6,6 +6,8 @@ import pandas as pd
 import uuid
 import sqlalchemy
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+import socket
 from typing import Any, Optional
 
 from langchain_core.messages import HumanMessage
@@ -45,16 +47,19 @@ def _normalize_postgres_url(db_url: str) -> str:
 
 
 def _get_allowed_db_host_suffixes() -> tuple[str, ...]:
-    """Return allowed hostname suffixes for user-provided db_url.
+    """Return allowed hostname substrings for user-provided db_url.
 
     Defaults to common managed Postgres providers. Override with ALLOWED_DB_HOST_SUFFIXES.
+
+    Note: despite the name, values are treated as *substrings* (to support pooler hosts like
+    aws-...pooler.supabase.com).
     """
 
     raw = (os.environ.get("ALLOWED_DB_HOST_SUFFIXES") or "").strip()
     if raw:
         parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
         return tuple(parts)
-    return ("supabase.co", "neon.tech")
+    return ("supabase", "neon")
 
 
 def _is_allowed_db_host(hostname: Optional[str]) -> bool:
@@ -64,8 +69,31 @@ def _is_allowed_db_host(hostname: Optional[str]) -> bool:
     # Allow local dev (Docker compose: db) explicitly.
     if host in {"localhost", "127.0.0.1", "::1", "db"}:
         return True
-    allowed_suffixes = _get_allowed_db_host_suffixes()
-    return any(host == s or host.endswith("." + s) for s in allowed_suffixes)
+    allowed_substrings = _get_allowed_db_host_suffixes()
+    return any(s in host for s in allowed_substrings)
+
+
+def _resolve_ipv4(hostname: str) -> Optional[str]:
+    """Resolve an IPv4 address for hostname (returns first A record if any)."""
+    try:
+        infos = socket.getaddrinfo(hostname, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
+        if not infos:
+            return None
+        sockaddr = infos[0][4]
+        return str(sockaddr[0])
+    except Exception:
+        return None
+
+
+def _with_hostaddr_ipv4(db_url: str, ipv4: str) -> str:
+    """Add libpq hostaddr=IPv4 to force IPv4 routing when IPv6 is unavailable."""
+    parsed = urllib.parse.urlparse(db_url)
+    qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    qs["hostaddr"] = [ipv4]
+    new_query = urllib.parse.urlencode(qs, doseq=True)
+    return urllib.parse.urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment)
+    )
 
 
 def _apply_password_to_db_url(db_url: str, password: str) -> str:
@@ -114,9 +142,27 @@ def _with_search_path(db_url: str, schema_name: str) -> str:
 
 def _validate_db_url(db_url: str) -> None:
     """Connectivity check; raises on failure."""
-    engine = sqlalchemy.create_engine(db_url, pool_pre_ping=True)
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1"))
+    def _try(url: str) -> None:
+        engine = sqlalchemy.create_engine(url, pool_pre_ping=True)
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+
+    try:
+        _try(db_url)
+        return
+    except OperationalError as e:
+        msg = str(e).lower()
+        # Common on hosts without IPv6 egress (e.g., Render): libpq tries AAAA first.
+        if "network is unreachable" not in msg and "no route to host" not in msg:
+            raise
+
+        parsed = urllib.parse.urlparse(db_url)
+        if not parsed.hostname:
+            raise
+        ipv4 = _resolve_ipv4(parsed.hostname)
+        if not ipv4:
+            raise
+        _try(_with_hostaddr_ipv4(db_url, ipv4))
 
 def exec_code(python_code: str) -> Any:
     """Executes the provided Python code and returns the result."""
