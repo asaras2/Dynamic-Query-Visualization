@@ -1,1 +1,5 @@
 .env
+static
+reports
+*/__pycache__
+uploads
