@@ -3,3 +3,6 @@ static
 reports
 */__pycache__
 uploads
+# Local SQL dumps (do not commit)
+/table_info.sql
+/employee_data.sql
