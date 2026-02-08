@@ -78,8 +78,8 @@ The system uses a multi-agent orchestrator pattern:
 
 ### Prerequisites
 - Python 3.10+
-- PostgreSQL 12+ running locally or remotely
-- OpenAI API key (for GPT-4o access)
+- A PostgreSQL database (Supabase / Neon supported out of the box)
+- OpenAI API key
 
 ### Setup
 
@@ -99,19 +99,14 @@ The system uses a multi-agent orchestrator pattern:
    pip install -r requirements.txt
    ```
 
-4. **Configure environment variables**
-   Create a `.env` file in the project root:
+4. **Configure environment variables (optional)**
+   Create a `.env` file in the project root if you want defaults:
    ```env
-   OPENAI_API_KEY=sk-...
-   ```
+   # Used to sign the Flask session cookie
+   FLASK_SECRET_KEY=dev-secret-change-in-production
 
-5. **Update database credentials** in `agent/sql_react_agent.py`:
-   ```python
-   user = "your_postgres_user"
-   psswd = "your_postgres_password"
-   host = "localhost"
-   port = "5432"
-   db = "your_database_name"
+   # Optional: restrict which hosts users can connect to via db_url
+   # ALLOWED_DB_HOST_SUFFIXES=supabase.co,neon.tech
    ```
 
 ## Running the Application
@@ -125,6 +120,33 @@ Visit `http://localhost:5000` in your browser. Enter natural language questions 
 - Query results as interactive table
 - AI-generated visualization
 - Insights summary
+
+On first load, the UI will prompt for:
+- `db_url`: your PostgreSQL connection string (e.g. Supabase/Neon)
+- `db_password` (optional): if your URL has no password
+- `schema_name` (optional): defaults to the database default schema
+- OpenAI API key
+
+### Supabase / Neon connection strings
+
+The app accepts standard PostgreSQL connection URLs that SQLAlchemy can use.
+
+**Supabase (direct connection)**
+```text
+postgresql://postgres@db.<project-ref>.supabase.co:5432/postgres?sslmode=require
+```
+
+**Neon (direct connection)**
+```text
+postgresql://<user>@<endpoint>.neon.tech/<db>?sslmode=require
+```
+
+**Password handling (important)**
+- Recommended: leave the password out of `db_url` and put it into the UI’s `db_password` field.
+- If you embed the password in the URL, it must be URL-encoded (e.g. `#` must be `%23`).
+
+**Schema handling**
+- If your tables live in a non-`public` schema (e.g. `analytical_schema`), set `schema_name=analytical_schema` in the UI.
 
 ### Command-Line Testing
 ```bash
@@ -216,7 +238,8 @@ Modify retry logic in `check_node()` to adjust error correction attempts.
 
 | Issue | Solution |
 |-------|----------|
-| "Failed to establish database connection" | Check PostgreSQL is running; verify credentials in `sql_react_agent.py` |
+| "Database host is not allowed" | Use a Supabase/Neon host (or set `ALLOWED_DB_HOST_SUFFIXES` in `.env` / container env). |
+| "Could not connect to the provided database URL" | Ensure the URL/user/password are correct; add `?sslmode=require`; for special chars in passwords prefer `db_password` or URL-encode. |
 | "Invalid API Key" | Ensure `OPENAI_API_KEY` is set in `.env` |
 | SQL execution fails on first attempt | Check agent logs; correction node will retry automatically |
 | Visualization not generating | Ensure Plotly/kaleido installed: `pip install plotly kaleido` |

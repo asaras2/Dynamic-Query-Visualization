@@ -1,29 +1,14 @@
-from flask import Flask, render_template, request, jsonify, session, flash, redirect, url_for
+from flask import Flask, render_template, request, jsonify, session
 from dotenv import load_dotenv
 import os
 import urllib.parse
 import pandas as pd
-import re
 import uuid
 import sqlalchemy
-import tempfile
-import subprocess
-import shutil
-import psycopg2
-from psycopg2 import sql as pg_sql
-from werkzeug.utils import secure_filename
-from langchain_community.utilities.sql_database import SQLDatabase
-from langchain_community.tools import QuerySQLDatabaseTool
-from langchain_core.language_models.llms import LLM
-from typing import Optional, TypedDict, Any
-from pydantic import Field
-import plotly.graph_objects as go
-import plotly.express as px
-from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage, AIMessage
-import kaleido
-import plotly.io as pio
-import imgkit
+from sqlalchemy import text
+from typing import Any, Optional
+
+from langchain_core.messages import HumanMessage
 
 from flask import send_from_directory
 
@@ -32,12 +17,10 @@ from agent.final_supervisor_agent_report import create_orchestrator
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-change-in-production')
 app.config['UPLOAD_FOLDER'] = 'static/images'
-app.config['SQL_UPLOAD_FOLDER'] = 'uploads/sql'
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 
 # Create upload directories
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs(app.config['SQL_UPLOAD_FOLDER'], exist_ok=True)
 
 # In-memory storage for uploaded data (session-based)
 # In production, consider using Redis or database
@@ -54,102 +37,86 @@ def _default_agent_state():
         "report_states": [],
     }
 
-
-def _get_pg_admin_conninfo() -> dict:
-    """Return connection info for the *admin* database used to CREATE DATABASE."""
-    # Prefer a single URL in env.
-    admin_url = os.environ.get("POSTGRES_ADMIN_URL") or os.environ.get("PG_ADMIN_URL")
-    if admin_url:
-        parsed = urllib.parse.urlparse(admin_url)
-        if parsed.scheme not in ("postgres", "postgresql"):
-            raise ValueError("POSTGRES_ADMIN_URL must start with postgresql://")
-        return {
-            "host": parsed.hostname or "localhost",
-            "port": parsed.port or 5432,
-            "user": urllib.parse.unquote(parsed.username or "postgres"),
-            "password": urllib.parse.unquote(parsed.password or ""),
-            "dbname": (parsed.path.lstrip("/") or "postgres"),
-        }
-
-    # Fallback to discrete PG env vars.
-    return {
-        "host": os.environ.get("PGHOST", "localhost"),
-        "port": int(os.environ.get("PGPORT", "5432")),
-        "user": os.environ.get("PGUSER", "postgres"),
-        "password": os.environ.get("PGPASSWORD", ""),
-        "dbname": os.environ.get("PGDATABASE", "postgres"),
-    }
+def _normalize_postgres_url(db_url: str) -> str:
+    db_url = (db_url or "").strip()
+    if db_url.startswith("postgres://"):
+        return "postgresql://" + db_url[len("postgres://") :]
+    return db_url
 
 
-def _build_pg_url(conninfo: dict, *, dbname: str) -> str:
-    user = urllib.parse.quote(conninfo["user"])
-    password = urllib.parse.quote(conninfo.get("password", ""))
-    host = conninfo["host"]
-    port = conninfo["port"]
-    if password:
-        return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
-    return f"postgresql://{user}@{host}:{port}/{dbname}"
+def _get_allowed_db_host_suffixes() -> tuple[str, ...]:
+    """Return allowed hostname suffixes for user-provided db_url.
 
-
-def _create_database_if_missing(conninfo: dict, *, dbname: str) -> None:
-    """Create a Postgres database if it doesn't exist."""
-    conn = psycopg2.connect(
-        host=conninfo["host"],
-        port=conninfo["port"],
-        user=conninfo["user"],
-        password=conninfo.get("password", ""),
-        dbname=conninfo["dbname"],
-    )
-    try:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
-            if cur.fetchone():
-                return
-            cur.execute(pg_sql.SQL("CREATE DATABASE {}" ).format(pg_sql.Identifier(dbname)))
-    finally:
-        conn.close()
-
-
-def _import_sql(db_url: str, sql_file_path: str, *, conninfo: dict) -> None:
-    """Import a .sql file into the given db_url.
-
-    Prefers `psql` when available (handles most dumps). Falls back to a simple psycopg2 executor
-    which will NOT work for complex dumps (e.g., COPY ... FROM STDIN).
+    Defaults to common managed Postgres providers. Override with ALLOWED_DB_HOST_SUFFIXES.
     """
-    psql = shutil.which("psql")
-    if psql:
-        env = os.environ.copy()
-        if conninfo.get("password"):
-            env["PGPASSWORD"] = conninfo["password"]
 
-        proc = subprocess.run(
-            [psql, db_url, "-v", "ON_ERROR_STOP=1", "-f", sql_file_path],
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        if proc.returncode != 0:
-            stderr = (proc.stderr or "").strip()
-            raise RuntimeError(f"psql import failed: {stderr}")
-        return
-    else:
-        # error
-        raise RuntimeError("psql command not found. Please ensure psql is installed and in your PATH for SQL imports.")
+    raw = (os.environ.get("ALLOWED_DB_HOST_SUFFIXES") or "").strip()
+    if raw:
+        parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
+        return tuple(parts)
+    return ("supabase.co", "neon.tech")
 
-    # # Fallback: basic statement splitting for simple schema+inserts.
-    # with open(sql_file_path, "r", encoding="utf-8", errors="ignore") as f:
-    #     sql_text = f.read()
 
-    # conn = psycopg2.connect(db_url)
-    # try:
-    #     with conn.cursor() as cur:
-    #         statements = [s.strip() for s in sql_text.split(";") if s.strip()]
-    #         for stmt in statements:
-    #             cur.execute(stmt)
-    #     conn.commit()
-    # finally:
-    #     conn.close()
+def _is_allowed_db_host(hostname: Optional[str]) -> bool:
+    if not hostname:
+        return False
+    host = hostname.lower().strip().rstrip(".")
+    # Allow local dev (Docker compose: db) explicitly.
+    if host in {"localhost", "127.0.0.1", "::1", "db"}:
+        return True
+    allowed_suffixes = _get_allowed_db_host_suffixes()
+    return any(host == s or host.endswith("." + s) for s in allowed_suffixes)
+
+
+def _apply_password_to_db_url(db_url: str, password: str) -> str:
+    """If db_url has a username but no password, inject the provided password."""
+    if not password:
+        return db_url
+    parsed = urllib.parse.urlparse(db_url)
+    if not parsed.username:
+        return db_url
+    if parsed.password:
+        return db_url
+
+    user = urllib.parse.quote(parsed.username, safe="")
+    pwd = urllib.parse.quote(password, safe="")
+    host = parsed.hostname or ""
+    port = f":{parsed.port}" if parsed.port else ""
+    netloc = f"{user}:{pwd}@{host}{port}"
+    return urllib.parse.urlunparse(
+        (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
+
+
+def _ensure_sslmode_require(db_url: str) -> str:
+    parsed = urllib.parse.urlparse(db_url)
+    qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    if "sslmode" in {k.lower() for k in qs.keys()}:
+        return db_url
+    qs["sslmode"] = ["require"]
+    new_query = urllib.parse.urlencode(qs, doseq=True)
+    return urllib.parse.urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment)
+    )
+
+
+def _with_search_path(db_url: str, schema_name: str) -> str:
+    """Return db_url with Postgres search_path pinned to schema_name."""
+    parsed = urllib.parse.urlparse(db_url)
+    qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    # libpq/psycopg2: options='-c search_path=...'
+    qs["options"] = [f"-c search_path={schema_name}"]
+    new_query = urllib.parse.urlencode(qs, doseq=True)
+    return urllib.parse.urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment)
+    )
+
+
+def _validate_db_url(db_url: str) -> None:
+    """Connectivity check; raises on failure."""
+    engine = sqlalchemy.create_engine(db_url, pool_pre_ping=True)
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
 
 def exec_code(python_code: str) -> Any:
     """Executes the provided Python code and returns the result."""
@@ -175,58 +142,74 @@ def exec_code(python_code: str) -> Any:
 
 @app.route('/upload', methods=['POST'])
 def upload_data():
-    """Handle SQL file and OpenAI API key upload."""
+    """Handle database connection + OpenAI API key upload."""
     try:
-        # Get uploaded files and form data
-        sql_file = request.files.get('sql_file')
+        # Get form data
         openai_api_key = request.form.get('openai_api_key', '').strip()
+        db_url = request.form.get('db_url', '').strip()
+        db_password = request.form.get('db_password', '').strip()
+        schema_name = request.form.get('schema_name', '').strip() or None
         
-        if not sql_file or not sql_file.filename:
-            return jsonify({'error': 'Please upload a SQL file'}), 400
-            
         if not openai_api_key:
             return jsonify({'error': 'Please provide an OpenAI API key'}), 400
-            
-        if not sql_file.filename.lower().endswith('.sql'):
-            return jsonify({'error': 'Please upload a .sql file'}), 400
+
+        if not db_url:
+            return jsonify({'error': 'Please provide a PostgreSQL connection string (db_url)'}), 400
+
+        db_url = _normalize_postgres_url(db_url)
+        parsed = urllib.parse.urlparse(db_url)
+        if parsed.scheme not in ("postgresql", "postgres"):
+            return jsonify({'error': 'Only PostgreSQL connection strings are supported (postgresql://...)'}), 400
+
+        if not _is_allowed_db_host(parsed.hostname):
+            return jsonify(
+                {
+                    'error': (
+                        'Database host is not allowed / Special characters in URL - please consider putting password below or encoding the url special chars. Use Supabase/Neon (or set ALLOWED_DB_HOST_SUFFIXES). '
+                        f'Got host: {parsed.hostname}'
+                    )
+                }
+            ), 400
+
+        # If user provided password separately, inject it when the URL has no password.
+        if db_password:
+            db_url = _apply_password_to_db_url(db_url, db_password)
+
+        if schema_name:
+            db_url = _with_search_path(db_url, schema_name)
         
         # Create session ID for this user
         session_id = str(uuid.uuid4())
         session['session_id'] = session_id
-        
-        # Save SQL file to local storage
-        filename = secure_filename(sql_file.filename)
-        sql_file_path = os.path.join(app.config['SQL_UPLOAD_FOLDER'], f"{session_id}_{filename}")
-        sql_file.save(sql_file_path)
-        
-        # Create a dedicated Postgres database for this upload and import the SQL into it
+
+        # Validate connectivity (try as-is, then retry with sslmode=require if needed)
         try:
-            conninfo = _get_pg_admin_conninfo()
-            safe_id = session_id.replace("-", "")
-            db_name = f"dqv_{safe_id}"[:63]
-            _create_database_if_missing(conninfo, dbname=db_name)
-            db_url = _build_pg_url(conninfo, dbname=db_name)
-            _import_sql(db_url, sql_file_path, conninfo=conninfo)
-        except Exception as e:
-            return jsonify(
-                {
-                    "error": (
-                        "Failed to initialize Postgres database from uploaded SQL. "
-                        "Ensure a Postgres server is running and POSTGRES_ADMIN_URL (or PGHOST/PGUSER/PGPASSWORD/...) is set. "
-                        f"Details: {str(e)}"
-                    )
-                }
-            ), 500
+            _validate_db_url(db_url)
+        except Exception:
+            try:
+                db_url_ssl = _ensure_sslmode_require(db_url)
+                _validate_db_url(db_url_ssl)
+                db_url = db_url_ssl
+            except Exception as e:
+                return jsonify(
+                    {
+                        'error': (
+                            'Could not connect to the provided database URL. '
+                            'If this is Supabase/Neon, ensure the user/password are correct and SSL is enabled '
+                            '(try adding ?sslmode=require). '
+                            f'Details: {str(e)}'
+                        )
+                    }
+                ), 400
 
         # Create custom orchestrator with user's API key + DB URL
-        user_orchestrator = create_orchestrator(openai_api_key, db_url=db_url)
+        user_orchestrator = create_orchestrator(openai_api_key, db_url=db_url, schema=schema_name)
         
         # Store user data in memory
         user_data_store[session_id] = {
-            'sql_file_path': sql_file_path,
             'openai_api_key': openai_api_key,
-            'db_name': db_name,
             'db_url': db_url,
+            'schema_name': schema_name,
             'orchestrator': user_orchestrator,
             'state': _default_agent_state(),
             'uploaded_at': pd.Timestamp.now()
@@ -249,7 +232,7 @@ def index():
         session_id = session.get('session_id')
         if not session_id or session_id not in user_data_store:
             return jsonify({
-                'error': 'Please upload your SQL file and API key first'
+                'error': 'Please connect your database and API key first'
             }), 400
         
         question = request.form['question']
@@ -274,7 +257,7 @@ def index():
             "answer": state["messages"][-1].content,
             "sql_query": state["sql_query"],
             "visualization": filename,
-            "data": state["df"].to_dict(orient="records")
+            "data": state["df"].to_dict(orient="records") if isinstance(state["df"], pd.DataFrame) else state["df"],
         }
         
         user_data_store[session_id]['state'] = state
@@ -309,5 +292,5 @@ def download_report(filename):
 
 
 if __name__ == '__main__':
-    app.run(debug=False, use_reloader=False)
+    app.run(port=3000, debug=False, use_reloader=False)
 

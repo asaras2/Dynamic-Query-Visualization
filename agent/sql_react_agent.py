@@ -31,10 +31,13 @@ from IPython.display import Image, display
 
 
 import os
-from typing import Optional, Any, List, Union
+from typing import Optional, Any, List, Union, cast
+
+END_NODE: Literal["__end__"] = "__end__"
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
+    retry_counter: int
 
 # driver = '{ODBC Driver 17 for SQL Server}'
 # server = os.environ["SERVER"]
@@ -152,8 +155,12 @@ def create_sql_agent_graph(api_key: Optional[str] = None, db_url: Optional[str] 
         system_msg = SystemMessage(content=build_system_sql_prompt(table_info))
         human_msg = HumanMessage(content=question)
 
+        print("====SYSTEM PROMPT FOR SQL GENERATION====")
+        print(system_msg.content)
+
+
         # Invoke structured LLM that returns SQLOutput directly
-        response = user_sql_llm_structured.invoke([system_msg, human_msg])
+        response = cast(SQLOutput, user_sql_llm_structured.invoke([system_msg, human_msg]))
         
         response_dict = {"question": question, "query": response.sql_query}
 
@@ -164,15 +171,18 @@ def create_sql_agent_graph(api_key: Optional[str] = None, db_url: Optional[str] 
                     name="nl2sql_tool",
                     tool_call_id="tool_123"
                 )
-            ]
+            ],
+            "retry_counter": 0,
         }
 
     def exec_sql_node(state: AgentState):
         last = state["messages"][-1]
-        data = json.loads(last.content)
+        content = last.content if isinstance(last.content, str) else json.dumps(last.content)
+        data = json.loads(content)
         # print("\n\n=======IN EXEC SQL NODE WITH ==>", data)
         sql_query = data['query']
         result = execute_sql_query(sql_query)
+        print("\n\n=======SQL QUERY RESULT==>", result)
 
         updated_state = {
             "question": data["question"],
@@ -193,11 +203,38 @@ def create_sql_agent_graph(api_key: Optional[str] = None, db_url: Optional[str] 
 
     def check_node(state: AgentState) -> Command[Literal["exec_sql","__end__"]]:
         last = state["messages"][-1]
-        data = json.loads(last.content)
+        content = last.content if isinstance(last.content, str) else json.dumps(last.content)
+        data = json.loads(content)
         result = data["result"]
+        print("\n\n=======IN CHECK NODE WITH SQL RESULT==>", result)
+
+        retry_counter = int(state.get("retry_counter", 0)) + 1
 
         # if there's an error, call the structured LLM to produce a corrected SQL
         if isinstance(result, str) and result.startswith("Error:"):
+            if retry_counter > 5:
+                final_state = {
+                    "question": data.get("question", ""),
+                    "query": data.get("query", ""),
+                    "result": (
+                        "Error: SQL generation failed after 5 correction attempts. "
+                        f"Last error was: {result}"
+                    ),
+                }
+                return Command(
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=json.dumps(final_state),
+                                name="exec_sql",
+                                tool_call_id="tool_456",
+                            )
+                        ],
+                        "retry_counter": retry_counter,
+                    },
+                    goto=END_NODE,
+                )
+
             system_msg = SystemMessage(content=build_system_correction_prompt(table_info))
             human_content = (
                 f"User Question:\n{data['question']}\n\nPrevious SQL:\n{data['query']}\n\n"
@@ -206,7 +243,7 @@ def create_sql_agent_graph(api_key: Optional[str] = None, db_url: Optional[str] 
             human_msg = HumanMessage(content=human_content)
 
             # Use structured LLM for correction
-            corrected_response = user_sql_llm_structured.invoke([system_msg, human_msg])
+            corrected_response = cast(SQLOutput, user_sql_llm_structured.invoke([system_msg, human_msg]))
             corrected_query = corrected_response.sql_query
 
             updated_state = {
@@ -222,12 +259,12 @@ def create_sql_agent_graph(api_key: Optional[str] = None, db_url: Optional[str] 
                         name="correct_sql",
                         tool_call_id="tool_789"
                     )
-                ]},
+                ], "retry_counter": retry_counter},
                 goto="exec_sql"
             )
 
         # otherwise we're done
-        return Command(goto=END)
+        return Command(update={"retry_counter": retry_counter}, goto=END_NODE)
 
     # Build graph
     builder = StateGraph(AgentState)

@@ -34,12 +34,25 @@
     {% if not is_initialized %}
       <div id="upload-section" style="margin-bottom: 20px; padding: 20px; background: #f8f9fa; border-radius: 8px; border: 2px dashed #dee2e6;">
         <h3 style="margin-top: 0; color: #495057;">📁 Setup Your Database</h3>
-        <p style="color: #6c757d; margin-bottom: 15px;">Upload your PostgreSQL SQL file and provide your OpenAI API key to get started.</p>
+        <p style="color: #6c757d; margin-bottom: 15px;">Connect to your PostgreSQL database (Supabase/Neon) and provide your OpenAI API key to get started.</p>
         
         <form id="upload-form" enctype="multipart/form-data" style="display: flex; flex-direction: column; gap: 15px;">
           <div>
-            <label for="sql_file" style="display: block; margin-bottom: 5px; font-weight: 600;">SQL File (.sql)</label>
-            <input type="file" id="sql_file" name="sql_file" accept=".sql" required style="width: 100%; padding: 8px; border: 1px solid #ced4da; border-radius: 4px;">
+            <label for="db_url" style="display: block; margin-bottom: 5px; font-weight: 600;">PostgreSQL Connection String (db_url)</label>
+            <input type="text" id="db_url" name="db_url" placeholder="postgresql://user@host:5432/db?sslmode=require" required style="width: 100%; padding: 8px; border: 1px solid #ced4da; border-radius: 4px;">
+            <div style="margin-top: 6px; color: #6c757d; font-size: 12px;">
+              Tip: Supabase/Neon typically require SSL. If unsure, include <code>?sslmode=require</code>.
+            </div>
+          </div>
+
+          <div>
+            <label for="db_password" style="display: block; margin-bottom: 5px; font-weight: 600;">Database Password (optional)</label>
+            <input type="password" id="db_password" name="db_password" placeholder="If your URL has no password" style="width: 100%; padding: 8px; border: 1px solid #ced4da; border-radius: 4px;">
+          </div>
+
+          <div>
+            <label for="schema_name" style="display: block; margin-bottom: 5px; font-weight: 600;">Schema (optional)</label>
+            <input type="text" id="schema_name" name="schema_name" placeholder="public" style="width: 100%; padding: 8px; border: 1px solid #ced4da; border-radius: 4px;">
           </div>
           
           <div>
@@ -48,7 +61,7 @@
           </div>
           
           <button type="submit" style="background: #007bff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">
-            🚀 Upload & Initialize
+            🚀 Connect & Initialize
           </button>
         </form>
         
@@ -61,7 +74,7 @@
         {% if is_initialized %}
           🎉 Welcome back! Ask me questions about your data.
         {% else %}
-          👋 Hi! Upload your SQL file and API key above, then ask me questions about your data!
+          👋 Hi! Connect your database and add your API key above, then ask me questions about your data!
         {% endif %}
       </div>
     </div>
@@ -211,19 +224,23 @@ if (uploadForm) uploadForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   
   const formData = new FormData();
-  const sqlFile = document.getElementById('sql_file').files[0];
+  const dbUrl = document.getElementById('db_url').value;
+  const dbPassword = document.getElementById('db_password').value;
+  const schemaName = document.getElementById('schema_name').value;
   const apiKey = document.getElementById('openai_api_key').value;
   
-  if (!sqlFile || !apiKey) {
+  if (!dbUrl || !apiKey) {
     showUploadStatus('Please fill in all fields', 'error');
     return;
   }
   
-  formData.append('sql_file', sqlFile);
+  formData.append('db_url', dbUrl);
+  if (dbPassword) formData.append('db_password', dbPassword);
+  if (schemaName) formData.append('schema_name', schemaName);
   formData.append('openai_api_key', apiKey);
   
   try {
-    showUploadStatus('Uploading and initializing...', 'loading');
+    showUploadStatus('Connecting and initializing...', 'loading');
     
     const response = await fetch('/upload', {
       method: 'POST',
