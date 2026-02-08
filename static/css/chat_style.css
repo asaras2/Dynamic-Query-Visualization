@@ -131,6 +131,16 @@
     outline: none;
     transition: 0.2s;
   }
+
+  [data-theme="dark"] #question-input {
+    background: #111827;
+    color: var(--text-color);
+    border-color: #4b5563;
+  }
+
+  [data-theme="dark"] #question-input::placeholder {
+    color: #9ca3af;
+  }
   
   #question-input:focus {
     border-color: var(--primary-color);
@@ -150,6 +160,38 @@
   
   #send-button:hover {
     background-color: #4338ca;
+  }
+
+  /* Upload/setup form (template uses inline light styles; override for dark mode) */
+  [data-theme="dark"] #upload-section {
+    background: #111827 !important;
+    border-color: #4b5563 !important;
+  }
+
+  [data-theme="dark"] #upload-section h3,
+  [data-theme="dark"] #upload-section p,
+  [data-theme="dark"] #upload-section label,
+  [data-theme="dark"] #upload-section div {
+    color: var(--text-color) !important;
+  }
+
+  [data-theme="dark"] #upload-section input[type="text"],
+  [data-theme="dark"] #upload-section input[type="password"],
+  [data-theme="dark"] #upload-section input[type="file"] {
+    background: #0b1220 !important;
+    color: var(--text-color) !important;
+    border-color: #4b5563 !important;
+  }
+
+  [data-theme="dark"] #upload-section input::placeholder {
+    color: #9ca3af !important;
+  }
+
+  [data-theme="dark"] #upload-section code {
+    background: #374151;
+    color: var(--text-color);
+    padding: 2px 6px;
+    border-radius: 6px;
   }
   
   .message {

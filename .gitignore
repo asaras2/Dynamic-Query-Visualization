@@ -1,6 +1,4 @@
 .env
-static
-reports
 */__pycache__
 uploads
 # Local SQL dumps (do not commit)
