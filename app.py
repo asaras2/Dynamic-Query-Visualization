@@ -160,12 +160,16 @@ def exec_code(python_code: str) -> Any:
     fig_object = local_vars.get('fig', None)
 
     if fig_object:
-        png_bytes = fig_object.to_image(format="png", width=1200, height=800)
-        with open(output_path, "wb") as f:
-            f.write(png_bytes)
+        try:
+            png_bytes = fig_object.to_image(format="png", width=1200, height=800)
+            with open(output_path, "wb") as f:
+                f.write(png_bytes)
+        except Exception as e:
+            print(f"Visualization export failed: {str(e)}")
+            return None
     else:
         print("No figure object found in the executed code.")
-    
+
     return filename
 
 
@@ -257,18 +261,19 @@ def index():
         user_orchestrator = user_data_store[session_id]['orchestrator']
         state = user_orchestrator.invoke(state)
         filename = exec_code(state["python_visualization_code"])
-        viz_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        state["report_states"].append({
-            "question": state["question"],
-            "img_path": viz_path,
-            "summary": state["messages"][-1].content,
-        })
+        if filename:
+            viz_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            state["report_states"].append({
+                "question": state["question"],
+                "img_path": viz_path,
+                "summary": state["messages"][-1].content,
+            })
 
         response_data = {
             "question": state["question"],
             "answer": state["messages"][-1].content,
             "sql_query": state["sql_query"],
-            "visualization":filename,
+            "visualization": filename,
             "data": state["df"].to_dict(orient="records")
         }
         

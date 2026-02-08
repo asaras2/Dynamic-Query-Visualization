@@ -96,11 +96,17 @@ inputForm.addEventListener('submit', async (e) => {
 
   const response = await fetch('/', {
     method: 'POST',
-    body: formData
+    body: formData,
+    credentials: 'same-origin'
   });
 
   const data = await response.json();
   typingMessage.remove();
+
+  if (!response.ok) {
+    addMessage(`<b>Error:</b><br>${data.error || 'Request failed'}`, 'bot');
+    return;
+  }
 
   addMessage(`<b>Answer:</b><br>${data.answer}`, 'bot');
 
@@ -221,7 +227,8 @@ if (uploadForm) uploadForm.addEventListener('submit', async (e) => {
     
     const response = await fetch('/upload', {
       method: 'POST',
-      body: formData
+      body: formData,
+      credentials: 'same-origin'
     });
     
     const result = await response.json();

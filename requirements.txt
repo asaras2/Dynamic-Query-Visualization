@@ -20,6 +20,7 @@ fastjsonschema
 Flask
 fpdf
 frozenlist
+gunicorn
 h11
 httpcore
 httpx
