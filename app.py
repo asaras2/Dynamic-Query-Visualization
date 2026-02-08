@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, jsonify, session
 from dotenv import load_dotenv
 import os
+import json
 import urllib.parse
 import pandas as pd
 import uuid
@@ -18,11 +19,10 @@ from agent.final_supervisor_agent_report import create_orchestrator
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-change-in-production')
-app.config['UPLOAD_FOLDER'] = 'static/images'
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 
-# Create upload directories
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+# Keep the folder around for compatibility (older builds stored PNGs here),
+# but visualization is now rendered client-side with Plotly.
+os.makedirs(os.path.join(app.root_path, 'static', 'images'), exist_ok=True)
 
 # In-memory storage for uploaded data (session-based)
 # In production, consider using Redis or database
@@ -165,25 +165,25 @@ def _validate_db_url(db_url: str) -> None:
         _try(_with_hostaddr_ipv4(db_url, ipv4))
 
 def exec_code(python_code: str) -> Any:
-    """Executes the provided Python code and returns the result."""
-    local_vars = {}
+    """Executes the provided Python code and returns a Plotly figure JSON spec.
+
+    This intentionally avoids server-side image export (Kaleido/Chromium), which can OOM
+    on small instances (e.g., Render free tier). The browser renders the interactive chart.
+    """
+    local_vars: dict[str, Any] = {}
     exec(python_code, {}, local_vars)
-    filename = f"viz_{uuid.uuid4().hex}.png"
-    output_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     fig_object = local_vars.get('fig', None)
 
-    if fig_object:
-        try:
-            png_bytes = fig_object.to_image(format="png", width=1200, height=800)
-            with open(output_path, "wb") as f:
-                f.write(png_bytes)
-        except Exception as e:
-            print(f"Visualization export failed: {str(e)}")
-            return None
-    else:
+    if not fig_object:
         print("No figure object found in the executed code.")
+        return None
 
-    return filename
+    try:
+        # to_json() produces a fully JSON-serializable string.
+        return json.loads(fig_object.to_json())
+    except Exception as e:
+        print(f"Visualization serialization failed: {str(e)}")
+        return None
 
 
 @app.route('/upload', methods=['POST'])
@@ -289,12 +289,12 @@ def index():
         # Use user's custom orchestrator
         user_orchestrator = user_data_store[session_id]['orchestrator']
         state = user_orchestrator.invoke(state)
-        filename = exec_code(state["python_visualization_code"])
-        if filename:
-            viz_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        plotly_figure = exec_code(state["python_visualization_code"])
+        if plotly_figure:
+            # Keep report history, but omit server-side images (client renders interactively).
             state["report_states"].append({
                 "question": state["question"],
-                "img_path": viz_path,
+                "img_path": "",
                 "summary": state["messages"][-1].content,
             })
 
@@ -302,7 +302,8 @@ def index():
             "question": state["question"],
             "answer": state["messages"][-1].content,
             "sql_query": state["sql_query"],
-            "visualization": filename,
+            "visualization": None,
+            "plotly_figure": plotly_figure,
             "data": state["df"].to_dict(orient="records") if isinstance(state["df"], pd.DataFrame) else state["df"],
         }
         

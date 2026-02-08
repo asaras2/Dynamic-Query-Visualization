@@ -242,7 +242,7 @@ Modify retry logic in `check_node()` to adjust error correction attempts.
 | "Could not connect to the provided database URL" | Ensure the URL/user/password are correct; add `?sslmode=require`; for special chars in passwords prefer `db_password` or URL-encode. |
 | "Invalid API Key" | Ensure `OPENAI_API_KEY` is set in `.env` |
 | SQL execution fails on first attempt | Check agent logs; correction node will retry automatically |
-| Visualization not generating | Ensure Plotly/kaleido installed: `pip install plotly kaleido` |
+| Visualization not generating | Charts render in the browser via Plotly.js; check the browser console and confirm the response includes `plotly_figure`. |
 
 ## Performance Notes
 

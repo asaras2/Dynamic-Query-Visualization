@@ -6,6 +6,7 @@
     --bubble-user: linear-gradient(135deg, #6366F1, #8B5CF6);
     --bubble-bot: #f1f5f9;
     --text-color: #000;
+  --muted-text: #6c757d;
     --pre-bg: #f9fafb;
   }
   
@@ -17,6 +18,7 @@
     --bubble-user: linear-gradient(135deg, #818CF8, #A78BFA);
     --bubble-bot: #4B5563;
     --text-color: #f9fafb;
+    --muted-text: #d1d5db;
     --pre-bg: #374151;
   }
   
@@ -170,9 +172,16 @@
 
   [data-theme="dark"] #upload-section h3,
   [data-theme="dark"] #upload-section p,
-  [data-theme="dark"] #upload-section label,
-  [data-theme="dark"] #upload-section div {
+  [data-theme="dark"] #upload-section label {
     color: var(--text-color) !important;
+  }
+
+  [data-theme="dark"] #upload-section .upload-tip {
+    color: var(--muted-text) !important;
+  }
+
+  .plotly-tip {
+    color: var(--muted-text);
   }
 
   [data-theme="dark"] #upload-section input[type="text"],

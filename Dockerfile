@@ -6,19 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # System deps:
-# - chromium is required by Kaleido v1+ to export Plotly figures to images
-# - build-essential is intentionally omitted for minimal image; psycopg2-binary is used
+# - ca-certificates helps HTTPS/TLS (DB + model providers)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        chromium \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-
-# Help Kaleido find a Chrome binary (it searches common names)
-RUN if command -v chromium >/dev/null 2>&1; then \
-      ln -sf "$(command -v chromium)" /usr/bin/google-chrome && \
-      ln -sf "$(command -v chromium)" /usr/bin/google-chrome-stable; \
-    fi
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt

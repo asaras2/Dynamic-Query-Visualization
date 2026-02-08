@@ -7,6 +7,9 @@
   <!-- Google Font -->
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/chat_style.css') }}">
+
+  <!-- Plotly (client-side interactive charts) -->
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 </head>
 
 <div id="lightbox" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background: rgba(0,0,0,0.8); z-index:200; justify-content:center; align-items:center;">
@@ -40,7 +43,7 @@
           <div>
             <label for="db_url" style="display: block; margin-bottom: 5px; font-weight: 600;">PostgreSQL Connection String (db_url)</label>
             <input type="text" id="db_url" name="db_url" placeholder="postgresql://user@host:5432/db?sslmode=require" required style="width: 100%; padding: 8px; border: 1px solid #ced4da; border-radius: 4px;">
-            <div style="margin-top: 6px; color: #6c757d; font-size: 12px;">
+            <div class="upload-tip" style="margin-top: 6px; font-size: 12px;">
               Tip: Supabase/Neon typically require SSL. If unsure, include <code>?sslmode=require</code>.
             </div>
           </div>
@@ -132,6 +135,10 @@ inputForm.addEventListener('submit', async (e) => {
     addMessage(`<b>Visualization:</b><br><img src="/static/images/${data.visualization}" onclick="addToDashboardBackground('/static/images/${data.visualization}')">`, 'bot');
   }
 
+  if (data.plotly_figure) {
+    addPlotlyMessage(data.plotly_figure);
+  }
+
   if (data.data && data.data.length > 0) {
     const tableHTML = generateTableHTML(data.data);
     addMessage(`<b>Data Table:</b><br>${tableHTML}`, 'bot');
@@ -149,6 +156,31 @@ function addMessage(text, sender) {
   return messageDiv;
 }
 
+function addPlotlyMessage(figSpec) {
+  // Create a message bubble containing an interactive Plotly chart.
+  const plotId = `plotly-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const messageDiv = addMessage(`<b>Visualization:</b><div id="${plotId}" style="width:100%; height:520px; margin-top:10px; cursor:pointer;"></div><div class="plotly-tip" style="margin-top:6px; font-size:12px;">Tip: click the chart to add it to the dashboard.</div>`, 'bot');
+
+  const plotDiv = messageDiv.querySelector(`#${plotId}`);
+  if (!plotDiv || typeof Plotly === 'undefined') return;
+
+  const data = figSpec.data || [];
+  const layout = figSpec.layout || {};
+  const config = Object.assign({ responsive: true, displaylogo: false }, figSpec.config || {});
+
+  Plotly.newPlot(plotDiv, data, layout, config);
+
+  // Preserve existing dashboard behavior (image thumbnails) by creating a PNG snapshot in-browser.
+  plotDiv.addEventListener('click', async () => {
+    try {
+      const dataUrl = await Plotly.toImage(plotDiv, { format: 'png', width: 1200, height: 800 });
+      addToDashboardBackground(dataUrl);
+    } catch (e) {
+      console.error('Failed to snapshot plotly chart:', e);
+    }
+  });
+}
+
 function addToDashboardBackground(imageSrc) {
   const img = document.createElement('img');
   img.src = imageSrc;
@@ -157,10 +189,14 @@ function addToDashboardBackground(imageSrc) {
   dashboardBackground.appendChild(img);
 
   // Save to localStorage too!
-  let savedImages = JSON.parse(localStorage.getItem('dashboard_images')) || [];
-  if (!savedImages.includes(imageSrc)) {
-    savedImages.push(imageSrc);
-    localStorage.setItem('dashboard_images', JSON.stringify(savedImages));
+  try {
+    let savedImages = JSON.parse(localStorage.getItem('dashboard_images')) || [];
+    if (!savedImages.includes(imageSrc)) {
+      savedImages.push(imageSrc);
+      localStorage.setItem('dashboard_images', JSON.stringify(savedImages));
+    }
+  } catch (e) {
+    console.warn('Skipping dashboard_images persistence (storage full?):', e);
   }
 }
 
